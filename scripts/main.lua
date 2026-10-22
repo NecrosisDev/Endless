@@ -172,9 +172,41 @@ local function load_met()
     state.met = {}
     for v in (storage.get("endless.met", "") or ""):gmatch("[^,]+") do state.met[tonumber(v)] = true end
 end
+-- the terrain template: a 1 x 1 terrain, the head (28 bytes) and the first tile of a story level's own
+-- .rft. Shipped builds carry it (assets/, made from exanima01.rft: byte-identical, checked offline); a
+-- build without the game-derived files makes it here once from the player's own game (levels.read, which
+-- refuses members over 8 MiB: exanima01.rft is 9.1 MB, so exanima02.rft, same head, serves until a
+-- ranged read exists) and keeps it in cache/
+local TERRAIN_SOURCES = {"exanima01.rft", "exanima02.rft", "exanima03.rft"}
+local terrain_raw
+local function terrain_template()
+    if terrain_raw then return terrain_raw end
+    terrain_raw = api.read_asset("assets/endless-template.rft") or api.read_asset("cache/endless-template.rft")
+    if terrain_raw then return terrain_raw end
+    if not (levels and levels.read) then say("no terrain template, and this runtime cannot read the game's files") return nil end
+    for _, src in ipairs(TERRAIN_SOURCES) do
+        local ok, data, why = pcall(levels.read, src, "Resource.rpk")
+        if ok and data and #data >= 48 then
+            local _, size = string.unpack("<I4I4", data, 41)
+            local cut = data:sub(1, 28) .. string.pack("<i4i4I4", 1, 1, 1) .. data:sub(41, 48 + size)
+            data = nil
+            if gen.load_terrain_template({}, cut) then
+                terrain_raw = cut
+                if assets and assets.write then pcall(assets.write, "cache/endless-template.rft", cut) end
+                say("terrain template made from the game's " .. src .. " (" .. #cut .. " bytes)")
+                return cut
+            end
+        else
+            say("terrain source " .. src .. " not read: " .. tostring(ok and why or data))
+        end
+    end
+    say("no terrain template could be made")
+    return nil
+end
+
 local function template()
     if state.template then return state.template end
-    local rfc, ini, rft = api.read_asset("assets/endless-template.rfc"), api.read_asset("assets/endless-template.ini"), api.read_asset("assets/endless-template.rft")
+    local rfc, ini, rft = api.read_asset("assets/endless-template.rfc"), api.read_asset("assets/endless-template.ini"), terrain_template()
     if not rfc or not ini or not rft then say("template files missing") return nil end
     local t, why = gen.load_template(rfc, ini)
     if not t then say("template rejected: " .. tostring(why)) return nil end
@@ -218,7 +250,7 @@ local BACKGROUND_BUDGET = 50000 -- a build ahead during play: about a quarter of
 local function build_on_worker(input, done)
     if not (tasks and tasks.worker) then return false end
     input.rfc, input.ini = api.read_asset("assets/endless-template.rfc"), api.read_asset("assets/endless-template.ini")
-    input.rft, input.dress = api.read_asset("assets/endless-template.rft"), api.read_asset("assets/endless-dress.bin")
+    input.rft, input.dress = terrain_template(), api.read_asset("assets/endless-dress.bin")
     local run = state.run
     local ok, handle = pcall(api.worker, "build_worker", input, function(r, err)
         state.building, state.worker = nil, nil
