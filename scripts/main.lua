@@ -51,6 +51,20 @@ local api = {
     travel = function(member) return levels.travel(member) end,
     current_level = function() local l = world.level and world.level() return l and l.name end,
     drive = function(record_id, on) if levels.drive then return levels.drive(record_id, on and 1 or 0) end end,
+    -- world.read rows for several levers at once, by their record ids: {[index] = row}; a row has
+    -- lever_position and, in a timer callback with world.levers, set_position(0 or 1)
+    lever_rows = function(ids)
+        if not (world and world.snapshot) then return nil end
+        local scene = world.snapshot()
+        if not scene or not scene.objects then return nil end
+        local want, rows = {}, {}
+        for i, id in ipairs(ids) do want[id] = i; want[0x80000000 | id] = i end
+        for _, o in ipairs(scene.objects) do
+            local i = want[o.item_id]
+            if i and o.lever_position then rows[i] = o end
+        end
+        return rows
+    end,
     -- world.read rows; a lever's lever_position needs world.levers (0.17.0)
     lever_position = function(record_id)
         if not (world and world.snapshot) then return nil end
@@ -106,6 +120,8 @@ local state = {
     want_travel = false,   -- the player entered the exit zone
     gate_open = false,     -- the boss died and the gate was driven
     pen_open = false,      -- the boss pen's portcullis was raised on arrival
+    pz = nil,              -- the boss-lock puzzle's progress in this area (watch_puzzle)
+    puzzle_timer = nil,
     worker = nil,          -- the running worker job's handle (the runtime cancels it on the way to the menu)
     pen_lever = nil,       -- its lever's position when last seen settled (a change is a pull)
     row_label = nil,       -- the title row's label while it is on the menu (it carries the deepest depth)
@@ -663,7 +679,126 @@ local function watch_pen(info, boss)
     return false
 end
 
+-- the boss-lock puzzles (Hunter, 2026-10-22: weight plate, lever order, timed gate with a failsafe, hold
+-- the door); the generator puts the puzzle's portcullis in the boss doorway (info.puzzle, endless_gen)
+local PUZZLE_POLL_SECONDS = 0.5
+local PLATE_REACH_CM = 90       -- a character this close to the plate's middle stands on it
+local TIMED_RETRY_GROWTH = 1.5  -- each missed timed run leaves the gate up this much longer next time
+local LEVER_SETTLE_POLLS = 4    -- after the levers spring back, polls before they are read again
+local function in_box(p, box) return p and box and p[1] >= box[1] and p[1] <= box[3] and p[3] >= box[2] and p[3] <= box[4] end
+local function puzzle_step(info, pz)
+    local kind = info.puzzle
+    if kind == "plate" or kind == "hold" then
+        -- a character on the plate holds the gate up: a companion told to wait, or a body dragged onto it
+        -- (so a held door needs no companion); an object's weight is the plate's own business (the game's
+        -- plate drives the same gate)
+        local snap = api.snapshot()
+        if not snap then return end
+        local on = false
+        for _, row in ipairs(snap.characters) do
+            local p = row.position
+            if not row.is_player and p then
+                local dx, dz = p[1] - info.puzzle_plate[1], p[3] - info.puzzle_plate[2]
+                if dx * dx + dz * dz <= PLATE_REACH_CM * PLATE_REACH_CM then on = true end
+            end
+        end
+        if on and not pz.held then
+            pz.held = api.drive(info.puzzle_gate, true) and true or false
+            if pz.held then say("someone stands on the plate: the gate rises") end
+        elseif not on and pz.held then
+            api.drive(info.puzzle_gate, false)
+            pz.held = false
+            say("the plate is empty: the gate falls")
+        end
+        return
+    end
+    local rows = api.lever_rows(info.puzzle_levers)
+    if not rows then return end
+    local pos = {}
+    for i = 1, #info.puzzle_levers do
+        if not rows[i] then return end
+        pos[i] = rows[i].lever_position
+    end
+    if pz.settle and pz.settle > 0 then pz.settle = pz.settle - 1 return end
+    if not pz.base then
+        pz.base, pz.start = {}, pz.start or {}
+        for i = 1, #pos do pz.base[i] = pos[i]; if pz.start[i] == nil then pz.start[i] = pos[i] end end
+        return
+    end
+    if kind == "order" then
+        for i = 1, #pos do
+            if math.abs(pos[i] - pz.base[i]) >= PEN_PULL then
+                pz.base[i] = pos[i]
+                if i == pz.progress + 1 then
+                    pz.progress = i
+                    if i == #pos then
+                        pz.solved = api.drive(info.puzzle_gate, true) and true or false
+                        api.set_flag("endless_puzzle_solved", 1)
+                        say("the levers in their order: the gate rises")
+                    end
+                else
+                    say("lever " .. i .. " out of order: they spring back")
+                    pz.progress = 0
+                    for j = 1, #pos do
+                        local row = rows[j]
+                        if row.set_position and math.abs(pos[j] - pz.start[j]) >= PEN_PULL then pcall(row.set_position, row, pz.start[j] < 0.5 and 0 or 1) end
+                    end
+                    pz.base, pz.settle = nil, LEVER_SETTLE_POLLS
+                end
+                return
+            end
+        end
+        return
+    end
+    -- timed: the near lever raises the gate for a while; the inside lever (the failsafe) raises it for good
+    local now = timers.now()
+    if math.abs(pos[2] - pz.base[2]) >= PEN_PULL then
+        pz.solved = api.drive(info.puzzle_gate, true) and true or false
+        say("the inside lever holds the gate up")
+        return
+    end
+    if pz.deadline then
+        if now >= pz.deadline then
+            local through = false
+            local snap = api.snapshot()
+            for _, row in ipairs(snap and snap.characters or {}) do
+                if row.is_player and in_box(row.position, info.puzzle_inside) then through = true end
+            end
+            if through then
+                pz.solved = true
+                api.set_flag("endless_puzzle_solved", 1)
+                say("through the gate in time")
+                return
+            end
+            api.drive(info.puzzle_gate, false)
+            pz.deadline, pz.fails = nil, pz.fails + 1
+            say("the gate falls (" .. pz.fails .. " missed)")
+        end
+        return
+    end
+    if math.abs(pos[1] - pz.base[1]) >= PEN_PULL then
+        pz.base[1] = pos[1]
+        if api.drive(info.puzzle_gate, true) then
+            local seconds = info.puzzle_seconds * TIMED_RETRY_GROWTH ^ pz.fails
+            pz.deadline = now + seconds
+            say(string.format("the gate rises for %.0f s", seconds))
+        end
+    end
+end
+local function watch_puzzle()
+    if state.puzzle_timer then timers.cancel(state.puzzle_timer); state.puzzle_timer = nil end
+    state.pz = {progress = 0, fails = 0}
+    local info = state.info
+    if not info or not info.puzzle then return end
+    state.puzzle_timer = timers.every(PUZZLE_POLL_SECONDS, function()
+        local now_info = state.info
+        if not now_info or not now_info.puzzle or state.pz.solved or api.phase() ~= PHASE_PLAY then return end
+        puzzle_step(now_info, state.pz)
+    end)
+end
+
 local function watch_boss()
+    watch_puzzle()
     if state.boss_timer then timers.cancel(state.boss_timer) end
     state.pen_open, state.pen_lever = false, nil
     state.boss_timer = timers.every(BOSS_POLL_SECONDS, function()
@@ -935,6 +1070,7 @@ events.on("runtime.phase", function(event)
     state.met = {}
     state.bosses = 0
     if state.boss_timer then timers.cancel(state.boss_timer); state.boss_timer = nil end
+    if state.puzzle_timer then timers.cancel(state.puzzle_timer); state.puzzle_timer = nil end
     if state.party_timer then timers.cancel(state.party_timer); state.party_timer = nil end
     api.clear_served()
 end)

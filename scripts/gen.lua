@@ -66,9 +66,21 @@ gen.START_X, gen.START_Z = START_X, START_Z
 function gen.floor_name(area) return POOL[(area - 1) % #POOL + 1] end
 function gen.depth_of(area) return (area - 1) // AREAS_PER_DEPTH + 1 end
 function gen.is_staircase(area) return area % AREAS_PER_DEPTH == 0 end
-function gen.is_lever_area(area) return gen.depth_of(area) >= 3 and area % 2 == 1 end
+-- the boss lock (endless_gen.puzzle_kind, PUZZLES)
+local PUZZLES = {"key", "lever", "plate", "order", "timed", "hold"}
+local PLATE_DIST, HOLD_DIST, TIMED_DIST = {3, 5}, {1, 2}, {4, 7}
+local TIMED_BASE, TIMED_PER_CELL = 5.0, 1.6
+local HEAVY = {"barrel wdo1 a02", "cratel4", "barrel wdo1 a01", "cratesmall a"}
+local CLUE = {["bottle_wkr b"] = true, ["pot"] = true}
+function gen.puzzle_kind(area)
+    local depth = gen.depth_of(area)
+    if depth <= 1 then return "key" end
+    if depth == 2 then return ({"key", "plate", "hold"})[(area - 1) % AREAS_PER_DEPTH + 1] end
+    return PUZZLES[(area * 5 + depth) % #PUZZLES + 1]
+end
+function gen.is_lever_area(area) return gen.puzzle_kind(area) == "lever" end
 -- two-key areas: from depth 4, on key (not lever) areas, the boss key sits in a locked room whose own key lies elsewhere
-function gen.is_vault_area(area) return gen.depth_of(area) >= 4 and not gen.is_lever_area(area) end
+function gen.is_vault_area(area) return gen.depth_of(area) >= 4 and gen.puzzle_kind(area) == "key" end
 function gen.fire_trap_count(area) local n = gen.depth_of(area) - 1 if n < 0 then n = 0 end return n < 5 and n or 5 end
 function gen.push_trap_count(area) local n = gen.depth_of(area) - 2 if n < 0 then n = 0 end return n < 4 and n or 4 end
 local LEVER_Y = 145.0
@@ -1869,6 +1881,9 @@ function gen.load_template(data, ini)
     t.plate_fire_ids, t.plate_closet_ids, t.closet_gate_ids = ints(keys.plate_fires), ints(keys.plate_closets), ints(keys.closet_gates)
     t.maze_gate_ids, t.maze_lever_ids = ints(keys.maze_gates), ints(keys.maze_levers)
     t.bypass_gate_id, t.bypass_lever_id = tonumber(keys.bypass_gate) or 0, tonumber(keys.bypass_lever) or 0
+    t.puzzle_gate_id, t.puzzle_plate_id = tonumber(keys.puzzle_gate) or 0, tonumber(keys.puzzle_plate) or 0
+    t.puzzle_lever_ids = {}
+    for v in (keys.puzzle_levers or ""):gmatch("[^,]+") do t.puzzle_lever_ids[#t.puzzle_lever_ids + 1] = tonumber(v) end
     t.wall_zone_id = tonumber(keys.wall_zone) or 0 -- the backrooms trigger
     t.enemy_ids = ints(keys.enemies)
     t.enemy_tiers = {}
@@ -2069,6 +2084,146 @@ local function names_block(names)
 end
 
 -- The area bytes for (seed, area). Mirrors endless_gen.build_floor step for step.
+local function puzzle_parts(t, lay, rng, kind, start, ic, ir, oc, orr, w, h, d_rooms, stage_no)
+    local shut = {[edge_key(w, ic, ir, oc, orr)] = true}
+    for _, sd in ipairs(lay.secrets) do shut[edge_key(w, sd[1], sd[2], sd[3], sd[4])] = true end
+    local sc0, sr0 = centre(start)
+    local near = reach_shut(lay, sc0, sr0, shut)
+    local dist = {[orr * w + oc] = 0}
+    local order = {{oc, orr}}
+    local i = 1
+    while i <= #order do
+        local c, r = order[i][1], order[i][2]
+        i = i + 1
+        for q = 0, 3 do
+            local nc, nr = c + SIDE_DX[q], r + SIDE_DZ[q]
+            local nk = nr * w + nc
+            if near[nk] and dist[nk] == nil and side_kind(lay, c, r, q) ~= WALL and not is_blocked(lay, c, r, nc, nr) then
+                dist[nk] = dist[r * w + c] + 1
+                order[#order + 1] = {nc, nr}
+            end
+        end
+    end
+    local places, objects, info = {}, {}, {puzzle = kind, puzzle_gate = t.puzzle_gate_id}
+    local function lever_at(c, r, q, lever_id)
+        local x, z = world(c, r, w, h, 0.5 + 0.42 * SIDE_DX[q], 0.5 + 0.42 * SIDE_DZ[q])
+        places[#places + 1] = placement(t.lever_place, 0x80000000 | lever_id, x, LEVER_Y, z, SIDE_YAW[(q + 2) % 4])
+    end
+    local function walls_of(c, r)
+        local out = {}
+        for q = 0, 3 do if side_kind(lay, c, r, q) == WALL then out[#out + 1] = q end end
+        return out
+    end
+    local function d_of(cell) return dist[cell[2] * w + cell[1]] end
+    if kind == "plate" or kind == "hold" then
+        local lim = kind == "hold" and HOLD_DIST or PLATE_DIST
+        local spots = {}
+        for _, cell in ipairs(order) do local d = d_of(cell) if d >= lim[1] and d <= lim[2] then spots[#spots + 1] = cell end end
+        if #spots == 0 then spots[1] = {oc, orr} end
+        local pc = rng:pick(spots)
+        local x, z = world(pc[1], pc[2], w, h)
+        places[#places + 1] = placement(t.plate_place, 0x80000000 | t.puzzle_plate_id, x, t.floor_y, z, 0.0)
+        info.puzzle_plate = {x, z}
+        if kind == "plate" and d_rooms then
+            local heavy = {}
+            for _, name in ipairs(HEAVY) do
+                local found
+                for _, rm in ipairs(d_rooms) do
+                    for _, rc in ipairs(rm[2]) do
+                        for _, ob in ipairs(rc[2]) do
+                            if not found and dress_name(ob[4]) == name and math.abs((sunpack("<f", ob[4], 8 + 20 + 16 + 1))) >= 0.7 then found = ob end
+                        end
+                    end
+                end
+                if found then heavy[#heavy + 1] = found end
+            end
+            local around = {}
+            local dp = d_of(pc)
+            for _, cell in ipairs(order) do
+                if math.abs(d_of(cell) - dp) <= 1 and not (cell[1] == pc[1] and cell[2] == pc[2]) then around[#around + 1] = cell end
+            end
+            if #around == 0 then around[1] = pc end
+            for _ = 1, (#heavy > 0 and 2 or 0) do
+                local ob = rng:pick(heavy)
+                local hc = rng:pick(around)
+                local fx, fz = rng:unit() * 0.5 + 0.25, rng:unit() * 0.5 + 0.25
+                local hx, hz = world(hc[1], hc[2], w, h, fx, fz)
+                objects[#objects + 1] = ob[4]:sub(1, 8 + 20) .. yaw_matrix(rng:unit() * 360.0) .. spack("<fff", hx, t.floor_y + ob[2], hz) .. ob[4]:sub(8 + 68 + 1)
+            end
+        end
+        return places, objects, info, pc
+    end
+    if kind == "order" then
+        local rooms = {}
+        for j = 0, lay.nrooms - 1 do
+            local room = lay.rooms[j]
+            if room.kind == "room" then
+                local cc, cr = centre(room)
+                if near[cr * w + cc] then rooms[#rooms + 1] = room end
+            end
+        end
+        local clue
+        for _, pr in ipairs(t.debris) do
+            if not clue and CLUE[pr[1]] and themed(t, pr[1], stage_no) then clue = pr end
+        end
+        local chosen = {}
+        local first = {oc, orr}
+        for k = 0, 2 do
+            local pool = {}
+            for _, room in ipairs(rooms) do
+                local taken = false
+                for _, ch in ipairs(chosen) do if ch == room then taken = true end end
+                if not taken then pool[#pool + 1] = room end
+            end
+            if #pool == 0 then pool = rooms end
+            if #pool == 0 then break end
+            local room = rng:pick(pool)
+            chosen[#chosen + 1] = room
+            local edge = {}
+            for _, cell in ipairs(cells_of(room)) do
+                for _, q in ipairs(walls_of(cell[1], cell[2])) do edge[#edge + 1] = {cell[1], cell[2], q} end
+            end
+            if #edge > 0 then
+                local e = rng:pick(edge)
+                local c, r, q = e[1], e[2], e[3]
+                if k == 0 then first = {c, r} end
+                lever_at(c, r, q, t.puzzle_lever_ids[k + 1])
+                if clue then
+                    local q1 = (q + 1) % 4
+                    for j = 0, k do
+                        local bx, bz = world(c, r, w, h, 0.5 + 0.3 * SIDE_DX[q] + 0.12 * (j - k / 2) * SIDE_DX[q1], 0.5 + 0.3 * SIDE_DZ[q] + 0.12 * (j - k / 2) * SIDE_DZ[q1])
+                        objects[#objects + 1] = object(clue[2], bx, t.floor_y + DEBRIS[clue[1]], bz, rng:unit() * 360.0)
+                    end
+                end
+            end
+        end
+        info.puzzle_levers = {t.puzzle_lever_ids[1], t.puzzle_lever_ids[2], t.puzzle_lever_ids[3]}
+        return places, objects, info, first
+    end
+    -- timed: a lever some way back on the near side, and a second inside the boss room (the failsafe)
+    local spots = {}
+    for _, cell in ipairs(order) do
+        local d = d_of(cell)
+        if d >= TIMED_DIST[1] and d <= TIMED_DIST[2] and #walls_of(cell[1], cell[2]) > 0 then spots[#spots + 1] = cell end
+    end
+    if #spots == 0 then for _, cell in ipairs(order) do if #walls_of(cell[1], cell[2]) > 0 then spots[#spots + 1] = cell end end end
+    if #spots == 0 then spots[1] = {oc, orr} end
+    local lc = rng:pick(spots)
+    local lq = walls_of(lc[1], lc[2])
+    lever_at(lc[1], lc[2], #lq > 0 and rng:pick(lq) or 0, t.puzzle_lever_ids[1])
+    local inner = walls_of(ic, ir)
+    lever_at(ic, ir, inner[1] or 0, t.puzzle_lever_ids[2])
+    info.puzzle_levers = {t.puzzle_lever_ids[1], t.puzzle_lever_ids[2]}
+    info.puzzle_seconds = TIMED_BASE + TIMED_PER_CELL * (d_of(lc) or TIMED_DIST[1])
+    local boss = lay:boss_room()
+    if boss then
+        local x0, z0 = world(boss.c0, boss.r0, w, h, 0.0, 0.0)
+        local x1, z1 = world(boss.c1, boss.r1, w, h, 1.0, 1.0)
+        info.puzzle_inside = {x0, z0, x1, z1}
+    end
+    return places, objects, info, lc
+end
+
 function gen.build(t, seed, area, present, met, opts)
     checkpoint()
     opts = opts or {}
@@ -2699,7 +2854,13 @@ function gen.build(t, seed, area, present, met, opts)
     local q = 0
     for k = 0, 3 do if oc - ic == SIDE_DX[k] and orr - ir == SIDE_DZ[k] then q = k end end
     local dx, dz = world(ic, ir, w, h)
-    places[#places + 1] = placement(t.door_place, 0x80000000 | t.door_ids[pair], dx, t.floor_y, dz, SIDE_YAW[q], 1)
+    local kind = gen.puzzle_kind(area)
+    local puzzled = (kind == "plate" or kind == "order" or kind == "timed" or kind == "hold") and t.puzzle_gate_id ~= 0 and #t.puzzle_lever_ids >= 3
+    if puzzled then -- the boss doorway is the puzzle's portcullis, down until the puzzle raises it
+        places[#places + 1] = placement(t.gate_place, 0x80000000 | t.puzzle_gate_id, dx, t.floor_y, dz, SIDE_YAW[q], 1)
+    else
+        places[#places + 1] = placement(t.door_place, 0x80000000 | t.door_ids[pair], dx, t.floor_y, dz, SIDE_YAW[q], 1)
+    end
     local info = {boss = 0, gate = 0, gate_lever = 0, fires = t.fire_ids}
     if lay.gate then
         local gbc, gbr, gec, ger = lay.gate[1], lay.gate[2], lay.gate[3], lay.gate[4]
@@ -2785,11 +2946,20 @@ function gen.build(t, seed, area, present, met, opts)
     local candidates = {}
     for i = 0, lay.nrooms - 1 do if lay.rooms[i].kind == "room" then candidates[#candidates + 1] = lay.rooms[i] end end
     if #candidates == 0 then candidates[1] = start end
+    if puzzled then
+        local p_places, p_objects, p_info, opener = puzzle_parts(t, lay, rng, kind, start, ic, ir, oc, orr, w, h, t.dress and t.dress[stage_no] and t.dress[stage_no].rooms or nil, stage_no)
+        for _, pl in ipairs(p_places) do places[#places + 1] = pl end
+        -- after the lamps and the object chunk were made: added at the end and the chunk made again
+        for _, ob in ipairs(p_objects) do objects[#objects + 1] = ob end
+        object_chunk = spack("<I4", #objects) .. table.concat(objects)
+        for k, v in pairs(p_info) do info[k] = v end
+        lay.key_cell = {opener[1], opener[2]}
+    end
     local by_distance = stable_sort(candidates, function(room) local cc, cr = centre(room) return dist(cc, cr, ic, ir) end)
     local far_half = {}
     for i = #by_distance // 2 + 1, #by_distance do far_half[#far_half + 1] = by_distance[i] end
     local vaults = {}
-    if gen.is_vault_area(area) then
+    if gen.is_vault_area(area) and not puzzled then
         for _, room in ipairs(far_half) do
             local n = 0
             for _, d in ipairs(lay.doors) do if contains(room, d[1], d[2]) or contains(room, d[3], d[4]) then n = n + 1 end end
@@ -2797,11 +2967,16 @@ function gen.build(t, seed, area, present, met, opts)
         end
     end
     local key_room = #vaults > 0 and rng:pick(vaults) or rng:pick(far_half)
-    local kcell = rng:pick(cells_of(key_room))
-    lay.key_cell = {kcell[1], kcell[2]}
-    local kfx, kfz = rng:unit() * 0.6 + 0.2, rng:unit() * 0.6 + 0.2
-    local kx, kz = world(kcell[1], kcell[2], w, h, kfx, kfz)
-    if gen.is_lever_area(area) then
+    local kx, kz
+    if not puzzled then
+        local kcell = rng:pick(cells_of(key_room))
+        lay.key_cell = {kcell[1], kcell[2]}
+        local kfx, kfz = rng:unit() * 0.6 + 0.2, rng:unit() * 0.6 + 0.2
+        kx, kz = world(kcell[1], kcell[2], w, h, kfx, kfz)
+    end
+    if puzzled then
+        -- the puzzle's parts are placed above; no key, no lever
+    elseif gen.is_lever_area(area) then
         local edge = {}
         for _, cell in ipairs(cells_of(key_room)) do
             for q = 0, 3 do if side_kind(lay, cell[1], cell[2], q) == WALL then edge[#edge + 1] = {cell[1], cell[2], q} end end
@@ -2813,7 +2988,7 @@ function gen.build(t, seed, area, present, met, opts)
         places[#places + 1] = placement(t.lever_place, 0x80000000 | t.lever_ids[pair], lx, LEVER_Y, lz, SIDE_YAW[(q + 2) % 4])
     elseif rng:chance(50) then places[#places + 1] = placement(t.key_place, 0x80000000 | t.key_ids[pair], kx, t.floor_y, kz, rng:unit() * 360.0)
     else places[#places + 1] = placement(t.chest_place, 0x80000000 | t.key_chest_ids[pair], kx, t.floor_y, kz, rng:unit() * 360.0) end
-    if per_spot > 0 and not gen.is_lever_area(area) then
+    if per_spot > 0 and not gen.is_lever_area(area) and not puzzled then
         local kx2, kz2 = world(lay.key_cell[1], lay.key_cell[2], w, h)
         for _, zid in ipairs(talk_zone_ids(t, 4, per_spot, present)) do
             places[#places + 1] = placement(t.marker_place, 0x80000000 | zid, kx2, 100.0, kz2, 0.0)

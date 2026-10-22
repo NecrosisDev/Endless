@@ -1137,6 +1137,88 @@ def _segment_corridors(lay: Layout) -> None:
                 lay.doors.append(((c, r), nb))
 
 
+def _puzzle_parts(tp, lay, rng, kind, start, inside, outside, w, h, d_rooms, stage_no):
+    """The boss lock's parts for a puzzle area: placements, objects, info and the opener cell."""
+    shut = {frozenset((inside, outside))} | {frozenset((s_in, s_out)) for s_in, s_out, _ in lay.secrets}
+    near = _reachable_shut(lay, start.centre, shut)
+    dist = {outside: 0}
+    order = [outside]
+    i = 0
+    while i < len(order):
+        c, r = order[i]
+        i += 1
+        for q, (dx, dz) in enumerate(SIDE):
+            n = (c + dx, r + dz)
+            if n in near and n not in dist and side_kind(lay, c, r, q) != WALL and frozenset(((c, r), n)) not in lay.blocked:
+                dist[n] = dist[(c, r)] + 1
+                order.append(n)
+    places, objects, info = [], [], {'puzzle': kind, 'puzzle_gate': tp.puzzle_gate_id}
+
+    def lever_at(c, r, q, lever_id):
+        x, z = world(c, r, w, h, 0.5 + 0.42 * SIDE[q][0], 0.5 + 0.42 * SIDE[q][1])
+        places.append(_placement(tp.lever_place, 0x80000000 | lever_id, (x, LEVER_Y, z), SIDE_YAW[(q + 2) % 4]))
+
+    def walls_of(c, r):
+        return [q for q in range(4) if side_kind(lay, c, r, q) == WALL]
+
+    if kind in ('plate', 'hold'):
+        lo, hi = HOLD_DIST if kind == 'hold' else PLATE_DIST
+        spots = [cell for cell in order if lo <= dist[cell] <= hi] or [outside]
+        pc = rng.pick(spots)
+        x, z = world(*pc, w, h)
+        places.append(_placement(tp.plate_place, 0x80000000 | tp.puzzle_plate_id, (x, tp.floor_y, z), 0.0))
+        info['puzzle_plate'] = [x, z]
+        if kind == 'plate' and d_rooms:
+            heavy = [got for got in (_proto(d_rooms, name) for name in HEAVY) if got is not None]
+            around = [cell for cell in order if abs(dist[cell] - dist[pc]) <= 1 and cell != pc] or [pc]
+            for _ in range(2 if heavy else 0):
+                dy, raw = rng.pick(heavy)
+                hc = rng.pick(around)
+                hx, hz = world(*hc, w, h, rng.unit() * 0.5 + 0.25, rng.unit() * 0.5 + 0.25)
+                objects.append(_put(raw, (hx, tp.floor_y + dy, hz), yaw_matrix(rng.unit() * 360.0)))
+        return places, objects, info, pc
+    if kind == 'order':
+        rooms = [room for room in lay.rooms if room.kind == 'room' and room.centre in near]
+        clue = next(((name, raw) for name, raw in tp.debris if name in CLUE and themed(tp, name, stage_no)), None)
+        chosen = []
+        first = outside
+        for k in range(3):
+            pool = [room for room in rooms if room not in chosen] or rooms
+            if not pool:
+                break
+            room = rng.pick(pool)
+            chosen.append(room)
+            edge = [(c, r, q) for (c, r) in room.cells for q in walls_of(c, r)]
+            if not edge:
+                continue
+            c, r, q = rng.pick(edge)
+            if k == 0:
+                first = (c, r)
+            lever_at(c, r, q, tp.puzzle_lever_ids[k])
+            if clue is not None:
+                for j in range(k + 1):  # k + 1 bottles at its foot: the order
+                    bx, bz = world(c, r, w, h, 0.5 + 0.3 * SIDE[q][0] + 0.12 * (j - k / 2) * SIDE[(q + 1) % 4][0], 0.5 + 0.3 * SIDE[q][1] + 0.12 * (j - k / 2) * SIDE[(q + 1) % 4][1])
+                    objects.append(_object(clue[1], (bx, tp.floor_y + DEBRIS[clue[0]], bz), rng.unit() * 360.0))
+        info['puzzle_levers'] = tp.puzzle_lever_ids[:3]
+        return places, objects, info, first
+    # timed: a lever some way back on the near side, and a second inside the boss room (the failsafe)
+    lo, hi = TIMED_DIST
+    spots = [cell for cell in order if lo <= dist[cell] <= hi and walls_of(*cell)] or [cell for cell in order if walls_of(*cell)] or [outside]
+    lc = rng.pick(spots)
+    lq = walls_of(*lc)
+    lever_at(lc[0], lc[1], rng.pick(lq) if lq else 0, tp.puzzle_lever_ids[0])
+    inner = walls_of(*inside) or [0]
+    lever_at(inside[0], inside[1], inner[0], tp.puzzle_lever_ids[1])
+    info['puzzle_levers'] = tp.puzzle_lever_ids[:2]
+    info['puzzle_seconds'] = TIMED_BASE + TIMED_PER_CELL * dist.get(lc, lo)
+    boss = lay.boss_room
+    if boss is not None:
+        x0, z0 = world(boss.c0, boss.r0, w, h, 0.0, 0.0)
+        x1, z1 = world(boss.c1, boss.r1, w, h, 1.0, 1.0)
+        info['puzzle_inside'] = [x0, z0, x1, z1]
+    return places, objects, info, lc
+
+
 def _maze_path(lay: Layout, m: Room) -> dict:
     """Parents of every carved maze cell from the entry (BFS over carved cells)."""
     parent = {m.entry: None}
@@ -1628,6 +1710,9 @@ class Template:
     reveal: list = field(default_factory=list)  # [(companion record id, [power ids])] granted at that companion's trust reveal
     bypass_gate_id: int = 0  # the companion bypass portcullis and its lever (0: no bypass)
     bypass_lever_id: int = 0
+    puzzle_gate_id: int = 0  # the boss-lock puzzles' portcullis, its plate and four levers (0: none)
+    puzzle_plate_id: int = 0
+    puzzle_lever_ids: list = field(default_factory=list)
     wall_zone_id: int = 0  # the backrooms trigger in the perfect copy's corner (0: none)
     companion_roles: list = field(default_factory=list)  # each companion's main role id (the dialogue's ActivateTopicN needs it)
     salve_id: int = 0  # the Healing Salve item record (imported from exanima03; 0: none)
@@ -1698,6 +1783,8 @@ def load_template(data: bytes, ini: str) -> Template:
     tp.sir_demon_id = int(keys.get('sir_demon', 0))
     tp.reveal = [(int(e.split(':')[0]), [int(x) for x in e.split(':')[1].split(',') if x]) for e in keys.get('reveal_powers', '').split(';') if e]
     tp.bypass_gate_id, tp.bypass_lever_id = int(keys.get('bypass_gate', 0)), int(keys.get('bypass_lever', 0))
+    tp.puzzle_gate_id, tp.puzzle_plate_id = int(keys.get('puzzle_gate', 0)), int(keys.get('puzzle_plate', 0))
+    tp.puzzle_lever_ids = [int(x) for x in keys.get('puzzle_levers', '').split(',') if x]
     tp.wall_zone_id = int(keys.get('wall_zone', 0))
     tp.companion_roles = ints('companion_roles') if keys.get('companion_roles') else []
     tp.salve_id = int(keys.get('salve', 0))
@@ -1786,9 +1873,27 @@ def _patch_script(item_db: bytes, area: int, seed: int, event: bytes = b'Endless
     return item_db[:i] + text + item_db[end:]
 
 
+# the boss lock (Hunter, 2026-10-22: "weight plate, lever order, time gate (with failsafe), hold the door"):
+# depth 1 a key; depth 2 a key, a weight plate or a held door in turn; deeper, all six in turn
+PUZZLES = ('key', 'lever', 'plate', 'order', 'timed', 'hold')
+PLATE_DIST, HOLD_DIST, TIMED_DIST = (3, 5), (1, 2), (4, 7)  # cells from the boss doorway (corridor steps)
+TIMED_BASE, TIMED_PER_CELL = 5.0, 1.6  # seconds the timed gate stays up: base plus per cell of the way back
+HEAVY = ('barrel wdo1 a02', 'cratel4', 'barrel wdo1 a01', 'cratesmall a')  # weight for the plate, if the stone has them
+CLUE = ('bottle_wkr b', 'pot')  # the lever order's clue: 1, 2, 3 of these at each lever's foot
+
+
+def puzzle_kind(area: int) -> str:
+    depth = depth_of(area)
+    if depth <= 1:
+        return 'key'
+    if depth == 2:
+        return ('key', 'plate', 'hold')[(area - 1) % AREAS_PER_DEPTH]
+    return PUZZLES[(area * 5 + depth) % len(PUZZLES)]
+
+
 def is_lever_area(area: int) -> bool:
-    """From depth 3 every other area hides a lever that opens the door instead of a key."""
-    return depth_of(area) >= 3 and area % 2 == 1
+    """An area whose boss door opens by a hidden lever instead of a key (puzzle_kind)."""
+    return puzzle_kind(area) == 'lever'
 
 
 def fire_trap_count(area: int) -> int:
@@ -1919,7 +2024,7 @@ def _pillar_cells(boss) -> list:
 def is_vault_area(area: int) -> bool:
     """Two-key areas: from depth 4, on key (not lever) areas, the boss key sits in a locked
     room whose own key lies elsewhere."""
-    return depth_of(area) >= 4 and not is_lever_area(area)
+    return depth_of(area) >= 4 and puzzle_kind(area) == 'key'
 
 
 def talk_zone_ids(tp: Template, spot: str, per_spot: int, present) -> list[int]:
@@ -2913,7 +3018,12 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
     inside, outside = lay.exit_door
     q = SIDE.index((outside[0] - inside[0], outside[1] - inside[1]))
     dx, dz = world(*inside, w, h)
-    places.append(_placement(tp.door_place, 0x80000000 | tp.door_ids[pair], (dx, tp.floor_y, dz), SIDE_YAW[q], 1))
+    kind = puzzle_kind(area)
+    puzzled = kind in ('plate', 'order', 'timed', 'hold') and tp.puzzle_gate_id and len(tp.puzzle_lever_ids) >= 3
+    if puzzled:  # the boss doorway is the puzzle's portcullis, down until the puzzle raises it
+        places.append(_placement(tp.gate_place, 0x80000000 | tp.puzzle_gate_id, (dx, tp.floor_y, dz), SIDE_YAW[q], 1))
+    else:
+        places.append(_placement(tp.door_place, 0x80000000 | tp.door_ids[pair], (dx, tp.floor_y, dz), SIDE_YAW[q], 1))
     info = {'boss': 0, 'gate': 0, 'gate_lever': 0, 'fires': list(tp.fire_ids)}
     if lay.gate:
         (gbc, gbr), (gec, ger) = lay.gate
@@ -2981,16 +3091,26 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
             places.append(_placement(tp.marker_place, 0x80000000 | tp.pair_zone_ids[spot_index * per_pair + k], (tx, 100.0, tz), 0.0))
     # the key: in the ordinary room farthest from the exit door; loose, or in a cache among decoys
     candidates = [room for room in lay.rooms if room.kind == 'room'] or [start]
+    puzzle_objects = []
+    if puzzled:
+        p_places, p_objects, p_info, opener = _puzzle_parts(tp, lay, rng, kind, start, inside, outside, w, h, dress[1] if dress else None, stage_no)
+        places += p_places
+        puzzle_objects = p_objects  # added after the lamps are placed (as gen.lua, whose object chunk is made first)
+        info.update(p_info)
+        lay.key_cell = opener
     by_distance = sorted(candidates, key=lambda room: abs(room.centre[0] - inside[0]) + abs(room.centre[1] - inside[1]))
     far_half = by_distance[len(by_distance) // 2 :]  # not always the farthest room: any of the farther half
     vaults = []
-    if is_vault_area(area):
+    if is_vault_area(area) and not puzzled:
         vaults = [room for room in far_half if sum(1 for d in lay.doors if room.contains(*d[0]) or room.contains(*d[1])) == 1]
     key_room = rng.pick(vaults) if vaults else rng.pick(far_half)
-    kc, kr = rng.pick(key_room.cells)
-    lay.key_cell = (kc, kr)
-    kx, kz = world(kc, kr, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
-    if is_lever_area(area):
+    if not puzzled:
+        kc, kr = rng.pick(key_room.cells)
+        lay.key_cell = (kc, kr)
+        kx, kz = world(kc, kr, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
+    if puzzled:
+        pass  # the puzzle's parts are placed above; no key, no lever
+    elif is_lever_area(area):
         # the lever on a wall of the key room, facing into the room (its device target is this pair's door)
         edge = [(c, r, q) for (c, r) in key_room.cells for q in range(4) if side_kind(lay, c, r, q) == WALL]
         c, r, q = rng.pick(edge)
@@ -3001,7 +3121,7 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
         places.append(_placement(tp.key_place, 0x80000000 | tp.key_ids[pair], (kx, tp.floor_y, kz), rng.unit() * 360.0))
     else:
         places.append(_placement(tp.chest_place, 0x80000000 | tp.key_chest_ids[pair], (kx, tp.floor_y, kz), rng.unit() * 360.0))
-    if per_spot and not is_lever_area(area):
+    if per_spot and not is_lever_area(area) and not puzzled:
         kx2, kz2 = world(*lay.key_cell, w, h)
         for zid in talk_zone_ids(tp, 'Key', per_spot, present):
             places.append(_placement(tp.marker_place, 0x80000000 | zid, (kx2, 100.0, kz2), 0.0))
@@ -3134,6 +3254,7 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
         struct.pack_into('<3f', b, 8 + 68, (lx + sx_ / n) / 2, ly, (lz + sz_ / n) / 2)
         nodes[room_lamp[o]] = bytes(b)
     node_chunk = struct.pack('<I', len(nodes)) + b''.join(nodes)
+    objects += puzzle_objects
     object_chunk = struct.pack('<I', len(objects)) + b''.join(objects)
     # people
     enemies = enemy_count(area)

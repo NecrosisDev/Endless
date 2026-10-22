@@ -333,6 +333,21 @@ live inside the level's exit script.
 - **Two-key areas** (from depth 4, on key areas): the boss key lies in a vault, a one-door room
   locked with another pair's door; that pair's key is loose or in a cache elsewhere. The
   solvability check covers the vault door (36 deep areas: 15 vaults, 0 problems).
+- **Boss-lock puzzles** (Hunter, 2026-10-22: weight plate, lever order, timed gate with a failsafe,
+  hold the door). `puzzle_kind(area)`: depth 1 key; depth 2 key, plate, hold in turn; deeper
+  `PUZZLES[(area*5+depth)%6]` over key, lever, plate, order, timed, hold (areas 1-60: key 16, plate 13,
+  timed 12, hold 7, lever 6, order 6). In a puzzle area the boss doorway is a portcullis (template
+  record 2734) instead of the locked door; the generator returns `info.puzzle*` and `main.lua`
+  (`watch_puzzle`, every 0.5 s) drives it. *Plate*: a pressure plate (2735) 3-5 cells back with two
+  heavy barrels or crates nearby. *Hold*: the plate 1-2 cells from the door, for a companion told to
+  wait or a body dragged onto it. Both: any non-player character within 90 cm of the plate holds the
+  gate up; the native plate also drives it. *Order*: three levers (2737-2739) in rooms on the near
+  side; from depth themes that have them, 1, 2 and 3 bottles or pots at each lever's foot give the
+  order. A wrong pull springs all levers back (`set_position`). *Timed*: a lever 4-7 cells back raises
+  the gate for 5 s + 1.6 s per cell, x1.5 after each miss; a player inside the boss room's box at the
+  deadline has made it; a second lever (2740) inside the boss room holds it up for good. Solving
+  sets `endless_puzzle_solved`. Unverified live: the native plate under objects or bodies, the
+  gate closing on a player in the doorway, and whether the bottle clue reads.
 - **Boss-room pillars:** level 1's freestanding column stands in the four inner corners of every
   boss room, so the fight has cover; boss and minion spawns avoid those cells.
 - **Props:** besides the floor props, wall-mounted hooks, chains, shelves, lamps, torch holders

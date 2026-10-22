@@ -35,7 +35,10 @@ calls.lever = {}
 -- world.read rows: the levers the test sets (record id -> lever_position, as world.levers gives it)
 world.snapshot = function()
     local objects = {}
-    for id, pos in pairs(calls.lever) do objects[#objects + 1] = {item_id = 0x80000000 | id, interaction_kind = "lever", lever_position = pos} end
+    for id, pos in pairs(calls.lever) do
+        objects[#objects + 1] = {item_id = 0x80000000 | id, interaction_kind = "lever", lever_position = pos,
+            set_position = function(self, v) assert(v == 0 or v == 1, "set_position takes 0 or 1") calls.lever[id] = v + 0.0 end}
+    end
     return {objects = objects}
 end
 player = {
@@ -411,6 +414,76 @@ do
         check(drives(info_pen.gate, 1) == gate_before + 1 and calls.flags["endless_boss_caged"] == 1, "the lever pulled with the boss in the pen opens the exit gate")
         bossPos = {5000, 0, 5000}
     end
+end
+-- the boss-lock puzzles (Hunter 2026-10-22): plate/hold, lever order, timed gate with its failsafe
+do
+    local found = {}
+    for area = 2, 40 do
+        local kind = gen.puzzle_kind(area)
+        if kind ~= "key" and kind ~= "lever" and not found[kind] then
+            local _, _, inf = gen.build(tpl, 7, area)
+            if inf.puzzle == kind then found[kind] = {area, inf} end
+        end
+    end
+    for _, kind in ipairs({"plate", "hold", "order", "timed"}) do check(found[kind] ~= nil, "a " .. kind .. " area exists among areas 2-40") end
+    local function arrive(entry)
+        fire("runtime.phase", {phase = "menu"})
+        store["endless.seed"] = 7
+        phase, current = 3, gen.floor_name(entry[1])
+        bossDead, bossId, bossPos = false, entry[2].boss, {5000, 0, 5000}
+        fire("script.event", {name = "EndlessNext", value = string.format("%010d_%010d", entry[1], 7), number = entry[1]})
+        tick(3.0)
+        return entry[2]
+    end
+    for _, kind in ipairs({"plate", "hold"}) do
+        if found[kind] then
+            local inf = arrive(found[kind])
+            local g = inf.puzzle_gate
+            local up = drives(g, 1)
+            check(drives(g, 1) == up, kind .. ": the gate stays shut with the plate empty")
+            party = {{record_id = 9001, is_player = false, dead = false, health = 50, health_max = 50, position = {inf.puzzle_plate[1] + 20, 0, inf.puzzle_plate[2]}}}
+            tick(1.0)
+            check(drives(g, 1) == up + 1, kind .. ": a companion on the plate raises the gate")
+            local down = drives(g, 0)
+            party[1].position = {inf.puzzle_plate[1] + 400, 0, inf.puzzle_plate[2]}
+            tick(1.0)
+            check(drives(g, 0) == down + 1, kind .. ": the gate falls when the plate is left")
+            party = {}
+        end
+    end
+    if found.order then
+        local inf = found.order[2]
+        local L = inf.puzzle_levers
+        calls.lever = {[L[1]] = 0.0, [L[2]] = 0.0, [L[3]] = 0.0}
+        arrive(found.order)
+        local g, up = inf.puzzle_gate, drives(inf.puzzle_gate, 1)
+        calls.lever[L[1]] = 1.0; tick(1.0)
+        calls.lever[L[3]] = 1.0; tick(1.0)
+        check(calls.lever[L[1]] == 0.0 and calls.lever[L[3]] == 0.0 and drives(g, 1) == up, "order: a wrong pull springs the levers back, gate shut")
+        tick(3.0)
+        for i = 1, 3 do calls.lever[L[i]] = 1.0; tick(1.0) end
+        check(drives(g, 1) == up + 1 and calls.flags["endless_puzzle_solved"] == 1, "order: the three in order raise the gate")
+        calls.flags["endless_puzzle_solved"] = nil
+    end
+    if found.timed then
+        local inf = found.timed[2]
+        local L = inf.puzzle_levers
+        calls.lever = {[L[1]] = 0.0, [L[2]] = 0.0}
+        arrive(found.timed)
+        local g, up, down = inf.puzzle_gate, drives(inf.puzzle_gate, 1), drives(inf.puzzle_gate, 0)
+        calls.lever[L[1]] = 1.0; tick(1.0)
+        check(drives(g, 1) == up + 1, "timed: the near lever raises the gate")
+        tick(inf.puzzle_seconds + 1.0)
+        check(drives(g, 0) == down + 1 and said("(1 missed)"), "timed: the gate falls when the player is not through in time")
+        calls.lever[L[1]] = 0.0; tick(1.0)
+        check(drives(g, 1) == up + 2 and said(string.format("%.0f s", inf.puzzle_seconds * 1.5)), "timed: the next try is longer")
+        calls.lever[L[2]] = 1.0; tick(1.0)
+        check(drives(g, 1) == up + 3 and said("the inside lever holds the gate up"), "timed: the failsafe lever inside holds it up")
+        tick(inf.puzzle_seconds * 2)
+        check(drives(g, 0) == down + 1, "timed: after the failsafe the gate does not fall")
+    end
+    calls.lever = {}
+    fire("runtime.phase", {phase = "menu"})
 end
 -- the menu while a build runs (a task cannot be stopped): it ends and is dropped, then the CONTINUE
 -- restore runs; never two builds at once (the 48 MiB guard in run_task would fail this test)

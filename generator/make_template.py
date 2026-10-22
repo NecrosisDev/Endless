@@ -357,6 +357,29 @@ def build(game: Path) -> tuple[bytes, str]:
         cdb.records.append(rdb.Record(nid, 0, 0, len(f.read_bytes()), f.read_bytes()))
         companions.append(nid)
         nid += 1
+    # boss-lock puzzles (Hunter, 2026-10-22: weight plate, lever order, timed gate, hold the door), after the
+    # companions so their ids stay put: a portcullis for the boss doorway opened by its own floor plate, and
+    # four levers wired to a dummy portcullis (placed out of sight) whose positions the mod reads; the mod
+    # drives the puzzle portcullis for the lever puzzles
+    puzzle_gate = rdb.Record(nid, gate_src.flags, 0, 0, b'')
+    puzzle_plate = rdb.Record(nid + 1, plate_src.flags, 0, 0, b'')
+    puzzle_dummy = rdb.Record(nid + 2, gate_src.flags, 0, 0, b'')
+    puzzle_gate.data = eg._set_door_opener(eg._set_name16(gate_src.data, 'Endless PuzzleGate'), 0x80000000 | puzzle_plate.id)
+    puzzle_gate.size = len(puzzle_gate.data)
+    puzzle_plate.data = eg._set_device_target(eg._set_look_model(eg._set_name16(plate_src.data, 'Endless PuzzlePlate'), 'pressplateuwa1'), 0x80000000 | puzzle_gate.id)
+    puzzle_plate.size = len(puzzle_plate.data)
+    nid += 3
+    puzzle_levers = []
+    for k in range(4):
+        pl = rdb.Record(nid, lever_src.flags, 0, 0, b'')
+        pl.data = eg._set_device_target(eg._set_name16(lever_src.data, f'Endless PuzzleLvr {k + 1}'), 0x80000000 | puzzle_dummy.id)
+        pl.size = len(pl.data)
+        puzzle_levers.append(pl)
+        nid += 1
+    puzzle_dummy.data = eg._set_door_opener(eg._set_name16(gate_src.data, 'Endless PuzzleDummy'), 0x80000000 | puzzle_levers[0].id)
+    puzzle_dummy.size = len(puzzle_dummy.data)
+    db.records += [puzzle_gate, puzzle_plate, puzzle_dummy] + puzzle_levers
+    level._set_local_db(lv, db)
     level.set_characters(lv, cdb)
     lv.spawns = []
     lv.people_order = ['db']
@@ -425,6 +448,10 @@ def build(game: Path) -> tuple[bytes, str]:
         f'maze_levers={",".join(str(r.id) for r in maze_levers)}',
         f'bypass_gate={bypass_gate.id}',
         f'bypass_lever={bypass_lever.id}',
+        f'puzzle_gate={puzzle_gate.id}',
+        f'puzzle_plate={puzzle_plate.id}',
+        f'puzzle_dummy={puzzle_dummy.id}',
+        f'puzzle_levers={",".join(str(r.id) for r in puzzle_levers)}',
         f'gate_levers={",".join(str(r.id) for r in gate_levers)}',
         *[f'bosses_t{i + 1}={",".join(map(str, bosses[i]))}' for i in range(len(bosses))],
         *[f'bosses_t{i + 1}_b{k}={",".join(map(str, boss_bands[i][k]))}' for i in range(len(bosses)) for k in range(1, BANDS + 1)],

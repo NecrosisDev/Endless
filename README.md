@@ -29,8 +29,16 @@ Author: NecrosisDev
 
 ### Keys, bosses and the way on
 
-- Each area has a locked **boss room**. Find the area's **key** to open it. From depth 3, every
-  other area uses a hidden **lever** instead of a key.
+- Each area has a locked **boss room**. In early areas you find the area's **key** to open it.
+  From depth 2 some boss rooms are behind a portcullis with a puzzle instead:
+  - **Weight plate:** put something heavy on the plate. Barrels and crates lie nearby.
+  - **Hold the door:** the plate is right by the door. Someone has to stay on it: a companion, or
+    a body.
+  - **Lever order:** three levers in nearby rooms. Pull them in the right order, or they all spring
+    back. Bottles at their feet may give a hint.
+  - **Timed gate:** a lever raises the gate for a few seconds. Each miss gives you longer, and a
+    lever inside the boss room keeps it up for good.
+  - From depth 3, some areas hide a **lever** that opens the boss room.
 - From depth 4, the boss key can lie in a locked vault whose own key is somewhere else in the area.
 - Beating the boss raises the **gate** to the exit. Walking into the exit takes you to the next area.
 - Some boss rooms have a small pen with a portcullis. Trap the boss in it and pull the lever, and
