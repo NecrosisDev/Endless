@@ -356,7 +356,8 @@ def render_all(records: dict, ids_by_name: dict) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--game', type=Path, default=Path(r'D:\SteamLibrary\steamapps\common\Exanima'))
+    ap.add_argument('--game', type=Path, default=os.environ.get('EXANIMA_DIR'), required=not os.environ.get('EXANIMA_DIR'),
+                    help='the Exanima folder (or set EXANIMA_DIR)')
     ap.add_argument('--out', type=Path, default=Path(__file__).resolve().parents[1] / 'out')
     ap.add_argument('--export', action='store_true', help='also write DIALOGUE.md from the built records')
     a = ap.parse_args()

@@ -697,7 +697,8 @@ def build_dress(game: Path, lower_members: set, written_sources: list, db=None) 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--game', type=Path, default=Path(r'D:\SteamLibrary\steamapps\common\Exanima'))
+    ap.add_argument('--game', type=Path, default=os.environ.get('EXANIMA_DIR'), required=not os.environ.get('EXANIMA_DIR'),
+                    help='the Exanima folder (or set EXANIMA_DIR)')
     ap.add_argument('--out', type=Path, default=Path(__file__).resolve().parents[1] / 'out')
     a = ap.parse_args()
     data, ini = build(a.game)
