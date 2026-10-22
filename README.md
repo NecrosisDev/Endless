@@ -32,8 +32,8 @@ Author: NecrosisDev
 - Each area has a locked **boss room**. In early areas you find the area's **key** to open it.
   From depth 2 some boss rooms are behind a portcullis with a puzzle instead:
   - **Weight plate:** put something heavy on the plate. Barrels and crates lie nearby.
-  - **Hold the door:** the plate is right by the door. Someone has to stay on it: a companion, or
-    a body.
+  - **Hold the door:** the plate is right by the door. Someone has to stay on it: a companion, a
+    body, or the one barrel or crate left nearby.
   - **Lever order:** three levers in nearby rooms. Pull them in the right order, or they all spring
     back. Bottles at their feet may give a hint.
   - **Timed gate:** a lever raises the gate for a few seconds. Each miss gives you longer, and a
