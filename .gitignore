@@ -7,3 +7,10 @@ assets/endless-template.rfc
 assets/endless-template.rft
 assets/endless-template.ini
 assets/charroles.rdb
+assets/endless-dress.bin
+
+# generator output (goldens, built roles and template before they are copied into assets/)
+out/
+
+# the ready-to-ship mod folder (tools/make_dist.py); the installer and packager copy from here
+/dist/
