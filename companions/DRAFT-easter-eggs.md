@@ -31,12 +31,4 @@ Order: Tobin, Aldric, Mira.
 - **Tobin**: "I know this room. It's up top, near where we came down. Same barrels. Same everything."
   - hop to Mira: **Mira**: "That isn't possible." **Tobin**: "I know it isn't."
 - **Aldric** (Tobin not with you): "I've stood in this room. Up top. Every crate where it was."
-- **Mira** (only her): "This room is from above. Every piece of it. Something copies."
-
-## Your last descent (remains in the farthest room of the area where your last run ended)
-
-Built without a line, as agreed. If you want one, the leader says it once:
-
-- **Aldric**: "Somebody got this far before us. No further."
-- **Mira**: "Somebody lay down here. Not long ago."
-- **Tobin**: "That's one of us. Was. Don't look at it."
+- **Mira** (only her): "I've been in this room. Up top. Every piece just where it was. That can't be right."

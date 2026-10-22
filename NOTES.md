@@ -7,8 +7,11 @@ from the README on 2026-10-22 when the README was rewritten for players.
   a 1 x 1 grid and the first tile of `exanima01.rft` (rebuilt byte-identical offline). A build without
   the game-derived files makes it in `main.lua` `terrain_template()` from the player's game through
   `levels.read` and keeps it in `cache/endless-template.rft`. `levels.read` refuses members over 8 MiB
-  and `exanima01.rft` is 9.1 MB, so `exanima02.rft` (same head, a different first tile; terrain 2.3 MB
-  instead of 1.4) serves until the runtime offers a ranged read; then exanima01 gives the shipped bytes.
+  and `exanima01.rft` is 9.1 MB, so on runtimes before r54 `exanima02.rft` (same head, a different first
+  tile; terrain 2.3 MB instead of 1.4) serves. From r54 a ranged read of exanima01.rft's first 354,414
+  bytes gives the shipped bytes (checked offline against the real file with the builder's own code).
+- **Easter egg 1 dropped** (Hunter, 2026-10-22: "last descent makes no sense if each run is randomized"):
+  no remains at the last run's area; `last_area` is gone from `build_floor`/`gen.build` opts and the key.
 
 
 An **ENDLESS** row on the title menu, directly under ARENA, starts a run of procedurally

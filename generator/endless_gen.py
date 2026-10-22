@@ -2493,7 +2493,7 @@ def grid_size(area: int) -> int:
     return GRID_BY_DEPTH.get(depth_of(area), GRID_MAX)
 
 
-def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, present=None, met=None, last_area: int = 0, shrine_done: bool = False) -> tuple[bytes, Layout]:
+def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, present=None, met=None, shrine_done: bool = False) -> tuple[bytes, Layout]:
     if not w:
         w = h = grid_size(area)
     rng = Rng(seed, area)
@@ -2871,14 +2871,8 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
             _name, raw = rng.pick(block_fill)
             objects.append(_object(raw, (x2, tp.floor_y, z2), rng.unit() * 360.0))
     remains = next((raw for name, raw in tp.debris if name == REMAINS), None) if themed(tp, REMAINS, stage_no) else None
-    if remains is not None and area == last_area:
-        # easter egg 1: where the last descent ended, remains in the room farthest from the start
-        sc0 = lay.rooms[0].centre
-        far = max((room for room in lay.rooms if room.kind == 'room'), key=lambda rm: abs(rm.centre[0] - sc0[0]) + abs(rm.centre[1] - sc0[1]), default=None)
-        if far is not None:
-            x, z = world(*far.centre, w, h, 0.4, 0.6)
-            objects.append(_object(remains, (x, DEBRIS[REMAINS], z), 37.0))
-            info_eggs['memorial'] = 1
+    # (easter egg 1, the last descent's remains, was dropped 2026-10-22: Hunter, "last descent makes no
+    # sense if each run is randomized")
     gaol = next((room for room in lay.rooms if room.kind == 'room' and room.purpose == 'gaol'), None)
     if remains is not None and gaol is not None and depth_of(area) >= 2 and rng.chance(ELARA_CHANCE):
         # easter egg 2: the twelfth name, remains by the bars of the first gaol

@@ -174,9 +174,9 @@ local function load_met()
 end
 -- the terrain template: a 1 x 1 terrain, the head (28 bytes) and the first tile of a story level's own
 -- .rft. Shipped builds carry it (assets/, made from exanima01.rft: byte-identical, checked offline); a
--- build without the game-derived files makes it here once from the player's own game (levels.read, which
--- refuses members over 8 MiB: exanima01.rft is 9.1 MB, so exanima02.rft, same head, serves until a
--- ranged read exists) and keeps it in cache/
+-- build without the game-derived files makes it here once from the player's own game and keeps it in
+-- cache/: a ranged levels.read (r54) of exanima01.rft's first 354,414 bytes gives the shipped bytes; an
+-- older runtime refuses exanima01.rft (9.1 MB, over its 8 MiB) and exanima02.rft (same head) serves
 local TERRAIN_SOURCES = {"exanima01.rft", "exanima02.rft", "exanima03.rft"}
 local terrain_raw
 local function terrain_template()
@@ -185,7 +185,13 @@ local function terrain_template()
     if terrain_raw then return terrain_raw end
     if not (levels and levels.read) then say("no terrain template, and this runtime cannot read the game's files") return nil end
     for _, src in ipairs(TERRAIN_SOURCES) do
-        local ok, data, why = pcall(levels.read, src, "Resource.rpk")
+        -- r54: only the slice needed (its head says the first tile's size); older runtimes ignore the range
+        -- and return the whole member (refused over 8 MiB, so exanima01.rft fails there and the next serves)
+        local ok, data, why = pcall(levels.read, src, "Resource.rpk", {offset = 0, length = 48})
+        if ok and data and #data >= 48 then
+            local _, size = string.unpack("<I4I4", data, 41)
+            if #data < 48 + size then ok, data, why = pcall(levels.read, src, "Resource.rpk", {offset = 0, length = 48 + size}) end
+        end
         if ok and data and #data >= 48 then
             local _, size = string.unpack("<I4I4", data, 41)
             local cut = data:sub(1, 28) .. string.pack("<i4i4I4", 1, 1, 1) .. data:sub(41, 48 + size)
@@ -233,15 +239,14 @@ end
 -- what a build reads besides (seed, area): the party present, the companions met, the last descent's
 -- area and the shrine; a prebuilt area is used only while these are unchanged
 local function build_inputs()
-    -- easter eggs: the area where the last descent ended (remains there), and the shrine's carving once a run
-    local last_area = tonumber((storage.get("endless.last", "") or ""):match("^%d+,(%d+),")) or 0
+    -- easter eggs: the shrine's carving once a run
     local parts = {}
     for i = 0, 2 do
         parts[#parts + 1] = (state.present and state.present[i]) and "p" or "-"
         parts[#parts + 1] = state.met[i] and "m" or "-"
     end
-    parts[#parts + 1] = tostring(last_area) .. (state.shrine_done and "s" or "-")
-    return state.present, state.met, {last_area = last_area, shrine_done = state.shrine_done}, table.concat(parts)
+    parts[#parts + 1] = state.shrine_done and "s" or "-"
+    return state.present, state.met, {shrine_done = state.shrine_done}, table.concat(parts)
 end
 
 local BACKGROUND_BUDGET = 50000 -- a build ahead during play: about a quarter of the default, so it stays out of the frame
@@ -323,7 +328,6 @@ local function serve_area(area, done)
             api.set_flag("endless_archetype", info.archetype or 0) -- 0 warren, 1 crypt, 2 cistern, 3 mine, 4 halls
             api.set_flag("endless_mutator", info.mutator or 0)     -- 0 none, 1 dark, 2 ambush, 3 silent, 4 collapsed
             -- easter eggs in this area, for the lines that will answer them (Hunter approves the words first)
-            api.set_flag("endless_egg_memorial", info.memorial or 0)
             api.set_flag("endless_egg_elara", info.elara or 0)
             api.set_flag("endless_egg_shrine", info.shrine or 0)
             api.set_flag("endless_egg_copy", info.copy or 0)

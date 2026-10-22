@@ -2618,24 +2618,7 @@ function gen.build(t, seed, area, present, met, opts)
     if themed(t, REMAINS, stage_no) then
         for _, pr in ipairs(t.debris) do if pr[1] == REMAINS then remains = pr[2] break end end
     end
-    if remains and area == (opts.last_area or 0) then
-        local s0c, s0r = centre(lay.rooms[0])
-        local far, far_d
-        for i = 0, lay.nrooms - 1 do
-            local rm = lay.rooms[i]
-            if rm.kind == "room" then
-                local cc, cr = centre(rm)
-                local d = dist(cc, cr, s0c, s0r)
-                if far_d == nil or d > far_d then far, far_d = rm, d end
-            end
-        end
-        if far then
-            local cc, cr = centre(far)
-            local x, z = world(cc, cr, w, h, 0.4, 0.6)
-            objects[#objects + 1] = object(remains, x, DEBRIS[REMAINS], z, 37.0)
-            info_eggs.memorial = 1
-        end
-    end
+    -- (easter egg 1, the last descent's remains, was dropped 2026-10-22: runs are randomized)
     local gaol
     for i = 0, lay.nrooms - 1 do if not gaol and lay.rooms[i].kind == "room" and lay.rooms[i].purpose == "gaol" then gaol = lay.rooms[i] end end
     if remains and gaol and gen.depth_of(area) >= 2 and rng:chance(ELARA_CHANCE) then
