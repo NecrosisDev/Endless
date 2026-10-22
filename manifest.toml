@@ -1,6 +1,6 @@
 [plugin]
 name = "Endless"
-version = "0.1.0"
+version = "0.2.0"
 category = "Content"
 
 # Runtime 0.26.0 names (title.rows, levels.serve, levels.flow, player.place, assets.read, [script.overrides]).
