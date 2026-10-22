@@ -90,7 +90,7 @@ def add_pair_topic(role_data: bytes, partner_id: int, owner: str, partner: str, 
     return data
 
 
-# ---- the exchanges. Relationships (proposed to Hunter 2026-10-22, draft): Aldric's lord's son
+# ---- the exchanges. Relationships: Aldric's lord's son
 # hired Tobin's crew to open the halls; Mira sold a copy of her stolen map to that crew.
 BANTER: dict[tuple[str, str], list[tuple[str, list[tuple[int, str]]]]] = {
     ('Aldric', 'Tobin'): [

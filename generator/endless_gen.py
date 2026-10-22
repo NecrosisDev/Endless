@@ -1,7 +1,7 @@
 """Endless mode area generator (offline reference implementation).
 
 Builds one dungeon AREA as an Exanima level (.rfc bytes) from the template made
-by make_template.py plus a run seed and the area number. Hunter's spec (2026-10-21):
+by make_template.py plus a run seed and the area number. The spec:
 every area hides a key that unlocks the area's locked door; past the door, a zone
 loads the next area; every AREAS_PER_DEPTH areas the exit is a staircase down and the
 depth (difficulty and complexity) goes up; deeper areas add mazes.
@@ -65,7 +65,7 @@ WIDE_MIN, WIDE_CHANCE = 8, 25
 def _wander(lay, c: int, r: int) -> int:
     v = ((c * 73856093) ^ (r * 19349663) ^ lay.wander) & 0xFFFF
     return 2 if v % 10 < 2 else 1 if v % 10 < 4 else 0
-# cell dressings (Hunter, 2026-10-22: scattered props clipped walls and left the middle empty): whole
+# cell dressings (scattered props clipped walls and left the middle empty): whole
 # cells of the game's own levels, kept by their wall pattern. Masks: bit q is a wall on side q (0 N,
 # 1 W, 2 S, 3 E); the classes are none, N, N+W (corner), N+S (passage), N+W+S (dead end).
 DRESS_CLASSES = [0, 1, 3, 5, 7]
@@ -74,7 +74,7 @@ DRESS_ROOM_CHANCE, DRESS_COLLAPSED_CHANCE, DRESS_CORRIDOR_CHANCE = 100, 100, 90 
 # below DRESS_MIN_CHANCE), and no cell is dressed once the area holds OBJECT_CAP objects (level 1 of
 # the game has about 3,400)
 DRESS_FULL_CELLS, DRESS_MIN_CHANCE, OBJECT_CAP = 1400, 50, 5200  # 5200: vanilla level 5's objects per cell over an Endless area (frame cost unmeasured)
-# rooms that tell a story (Hunter, 2026-10-22): every enclosed room of the stage's own levels is kept
+# rooms that tell a story: every enclosed room of the stage's own levels is kept
 # whole and tagged by what is in it; an Endless room takes one source room by its purpose and fills
 # its cells from that room's cells of the same wall pattern. Seats get loose angles, and now and
 # then one lies knocked over in one of the poses the game's own levels use.
@@ -82,7 +82,7 @@ DRESS_TAGS = ['misc', 'store', 'barracks', 'kitchen', 'latrine', 'workshop', 'sh
 PURPOSE_TAG = {'store': 1, 'barracks': 2, 'kitchen': 3, 'latrine': 4, 'workshop': 5, 'shrine': 6, 'gaol': 7, 'surgery': 8}
 TAG_PURPOSE = {tag: purpose for purpose, tag in PURPOSE_TAG.items()}
 SEAT_JITTER = 15.0  # degrees either way (30 left seats facing their tables less often than the shipped levels')
-# rooms and their neighbours (Hunter, 2026-10-22: big and small rooms, rooms that need certain
+# rooms and their neighbours (big and small rooms, rooms that need certain
 # neighbours and rooms that cannot sit by others). Neighbours: ordinary rooms within NEIGHBOUR_GAP
 # cells of each other. The kitchen wants a store or another kitchen (a mess) beside it when the area
 # has a store; the gaol and the latrine keep away from the kitchen; the shrine keeps apart from the
@@ -93,7 +93,7 @@ SMALL_PURPOSES, SMALL_MAX = ('latrine', 'gaol', 'store'), 16
 BIG_PURPOSES, BIG_MIN = ('kitchen', 'barracks', 'shrine'), 6
 NEIGHBOUR_PASSES = 2
 ITEM_CAP = 200  # loose table items (cups, books...) an area may carry
-# easter eggs (Hunter, 2026-10-22). Dialogue for them waits for his approval; these are the places.
+# easter eggs. These are the places; their dialogue comes later.
 #  1. your last descent: remains in the farthest room of the area where the last run ended;
 #  2. the twelfth name: remains in the first gaol, now and then (from depth 2);
 #  3. Bram's shrine: the carving in the treasury, once a run, from depth 6, where the stone has it;
@@ -104,12 +104,12 @@ CARVING = 'carving stla a1'
 ELARA_CHANCE, COPY_CHANCE = 15, 4
 BLUE_DEPTH, BLUE_LIGHT = 13, (0.18, 0.32, 0.7)
 CHAIR_DEPTHS = 50
-# the backrooms (Hunter, 2026-10-22, turning the perfect copy into a reference): a chair in the copy's
+# the backrooms (turning the perfect copy into a reference): a chair in the copy's
 # corner faces the wall; walking into the corner behind it takes you to a vast, empty level of the same
 # stone, every room alike under the same dull yellow light, no one in it; the way back is behind a
 # locked door whose key lies somewhere in it, and it returns you to the room that sent you
 BACK_LIGHT, BACK_STRENGTH, BACK_GRID = (0.62, 0.56, 0.3), 0.6, 64
-# its furniture (Hunter, 09:30: "uncanny layouts of props, furniture"): sparse and wrong. Chairs in rows
+# its furniture ("uncanny layouts of props, furniture"): sparse and wrong. Chairs in rows
 # facing a wall, beds stood on end, one thing dead centre, the same chair and bucket in the same spot
 # room after room, and in the biggest room a table set for one. Only the stone's own vanilla props.
 # Out of 100 per ordinary room: rows below 12, beds below 20, centre below 32, the twin below 50.
@@ -124,7 +124,7 @@ BED_HALF = 111.0  # half of bed b01's length (its model x runs -111..111): the l
 SIZE_FACTOR = 2  # a source room within this factor of the room's size is preferred (a private kitchen, a mess hall)
 MAX_ROOMS = 60     # ordinary rooms an area may try for
 EXIT_TRIES = 6     # rooms tried as the exit, farthest first, until a boss room fits beside it
-# close quarters (Hunter, 2026-10-22: "mix in some smaller, tighter, close quarters areas with the large
+# close quarters ("mix in some smaller, tighter, close quarters areas with the large
 # rooms to fill in gaps"): after the plan, small rooms tucked one cell from any room where ground is left
 FILL_SHARE = 35        # percent of the plan's room count added as small rooms
 FILL_SIZE = (2, 3)     # their sides, in cells
@@ -144,12 +144,12 @@ SPINE_STALL = 40       # failed tries in a row that end the spine early
 WING_GROW = 50         # percent of wing rooms placed beside the newest room
 # extra corridors join a room to one of its nearest rooms: rooms * (LOOP_BASE + LOOP_PER * arch loops) / 100
 LOOP_BASE, LOOP_PER, LOOP_NEAREST = 40, 4, 3
-# bigger areas, growing with depth (Hunter, 2026-10-22): the grid is 56 cells a side at depth 1, 60 at
+# bigger areas, growing with depth: the grid is 56 cells a side at depth 1, 60 at
 # depth 2 and 64 from depth 3 (64 x 64 is the largest grid the game's own levels use); the room
 # count keeps growing with depth inside it
 GRID_BY_DEPTH = {1: 56, 2: 60}
 GRID_MAX = 64
-# doors barricaded from the room side (Hunter): the doorway stays built, props block it, and another
+# doors barricaded from the room side: the doorway stays built, props block it, and another
 # way in must exist; 1 + depth // 2 of them, at most 4
 BLOCKERS = ('barricade d', 'barricade b', 'barricade c')
 BLOCK_FILL = ('cratel4', 'barrel wdo1 a02', 'cratesmall a', 'sack a')
@@ -168,11 +168,11 @@ PROP_NAMES = ['barrel wdo1 a02', 'cratesmall a', 'cratesmall b', 'sack a', 'stoo
               'cage_human a', 'bathtub mtod a01', 'stretcher', 'cookpot a', 'table_m_re a', 'bench b01', 'sawtwohand',  # set-piece rooms
               'barricade d', 'barricade b', 'barricade c',  # blocked doors
               'carving stla a1']  # an easter egg: the shrine's carving
-# area archetypes (Hunter's review, 2026-10-22): what an area is changes the layout rules, not only
+# area archetypes: what an area is changes the layout rules, not only
 # the dressing. rooms: wanted before +2 per depth; size / hall_size: a side in cells; hall: % of
 # rooms that are halls (from depth 2); loops: extra corridors beyond the tree; style: % of rooms
 # on the second wall/floor set; big: one 8..9 hall first (the cistern); spurs: dead-end corridors.
-# gap: cells of ground between a new room and the room it is placed beside (Hunter: the areas were
+# gap: cells of ground between a new room and the room it is placed beside (the areas were
 # mostly hallways; rooms now grow out of each other instead of landing anywhere on the grid)
 ARCHETYPES = {
     'warren': dict(rooms=16, size=(3, 7), hall=25, hall_size=(5, 8), loops=5, style=30, big=False, spurs=2, gap=(1, 3)),
@@ -192,7 +192,7 @@ QUIET_LIGHT = (0.6, 0.5, 0.35)
 # light by use (2026-10-22): an ordinary room's lamp hangs halfway between its middle and the middle of
 # what stands in it, as bright as its use asks (work rooms brighter, stores and cells dimmer); no more lamps
 USE_LIGHT = {'kitchen': 1.15, 'workshop': 1.15, 'surgery': 1.1, 'shrine': 1.05, 'barracks': 0.9, 'store': 0.65, 'latrine': 0.55, 'gaol': 0.5}
-# room purposes (Hunter's review, 2026-10-22): what an ordinary room is for decides its props,
+# room purposes: what an ordinary room is for decides its props,
 # its enemies, its chest and whether a healing salve lies there. The quiet room (one per area
 # from depth 2) spawns nothing and always holds a chest and a salve: a place to breathe.
 PURPOSE_PROPS = {'store': ['barrel wdo1 a02', 'cratesmall a', 'cratesmall b', 'sack a', 'cratel4', 'basket_wkr e'],
@@ -532,7 +532,7 @@ def generate_layout(rng: Rng, w: int, h: int, area: int, start_cell, arch_name: 
     arch = ARCHETYPES[arch_name]
     sc, sr = start_cell
     rooms = [Room(sc - 1, sr - 1, sc + 1, sr + 1, 'start')]
-    wanted = min(2 * arch['rooms'] + 3 * depth, MAX_ROOMS)  # Hunter (2026-10-22): bigger areas, growing with depth
+    wanted = min(2 * arch['rooms'] + 3 * depth, MAX_ROOMS)  # bigger areas, growing with depth
     attempts = 0
     big_done = not arch['big']
     spine_n = max(3, wanted // SPINE_SHARE)
@@ -804,7 +804,7 @@ def _block_doors(lay: Layout, rng: Rng, depth: int) -> None:
 
 
 def _treasury(lay: Layout, rng: Rng) -> None:
-    """The hidden puzzle (Hunter, 2026-10-22): a 2x2 room off an ordinary room, behind a
+    """The hidden puzzle: a 2x2 room off an ordinary room, behind a
     wall-looking secret door whose brick switch is on the host room's own wall. It touches nothing
     but its host. A rare chest and the second healing salve lie inside."""
     hosts = [room for room in lay.rooms if room.kind == 'room']
@@ -845,7 +845,7 @@ def _treasury(lay: Layout, rng: Rng) -> None:
 
 
 def _wing_gate(lay: Layout) -> None:
-    """The main puzzle (Hunter, 2026-10-22): a portcullis on a doorway that every way to the boss
+    """The main puzzle: a portcullis on a doorway that every way to the boss
     door passes through, cutting the area into the near side and the boss wing; its lever is on the
     near side, in a dead end when there is one, else on a room wall, as far from the gate as it can
     be. The wing must hold two ordinary rooms or more; the doorway nearest the boss door that
@@ -1168,10 +1168,10 @@ def _puzzle_parts(tp, lay, rng, kind, start, inside, outside, w, h, d_rooms, sta
         x, z = world(*pc, w, h)
         places.append(_placement(tp.plate_place, 0x80000000 | tp.puzzle_plate_id, (x, tp.floor_y, z), 0.0))
         info['puzzle_plate'] = [x, z]
-        if kind == 'plate' and d_rooms:
+        if d_rooms:  # two weights by the plate; one by the held door, for a player without a companion
             heavy = [got for got in (_proto(d_rooms, name) for name in HEAVY) if got is not None]
             around = [cell for cell in order if abs(dist[cell] - dist[pc]) <= 1 and cell != pc] or [pc]
-            for _ in range(2 if heavy else 0):
+            for _ in range((2 if kind == 'plate' else 1) if heavy else 0):
                 dy, raw = rng.pick(heavy)
                 hc = rng.pick(around)
                 hx, hz = world(*hc, w, h, rng.unit() * 0.5 + 0.25, rng.unit() * 0.5 + 0.25)
@@ -1286,7 +1286,7 @@ def _maze_gates(lay: Layout, rng: Rng, depth: int) -> None:
 
 
 def solvable(lay: Layout) -> list[str]:
-    """Hunter's rule: every gate's opener must be reachable from the player's side before the
+    """Every gate's opener must be reachable from the player's side before the
     gate, and the exit goal reachable in the end. Simulates: all gated edges shut, then
     repeatedly opens every gate whose opener cell is reachable (the keyed door: the key/lever
     room; the boss gate: the boss room; secret doors: their switch room; maze gates: their lever
@@ -1398,7 +1398,7 @@ def encode_cell(lay: Layout, c: int, r: int) -> tuple[int, int, int]:
         return word, 0, 0
     if not lay.built(c, r):
         # rock only beside built cells, as the shipped levels do (level 1: 329 rock cells, the
-        # rest of the unbuilt grid empty); an area full of rock cost frames (Hunter, 7 FPS)
+        # rest of the unbuilt grid empty); an area full of rock cost frames (7 FPS)
         for dx in (-1, 0, 1):
             for dz in (-1, 0, 1):
                 if (dx or dz) and lay.built(c + dx, r + dz):
@@ -1873,12 +1873,13 @@ def _patch_script(item_db: bytes, area: int, seed: int, event: bytes = b'Endless
     return item_db[:i] + text + item_db[end:]
 
 
-# the boss lock (Hunter, 2026-10-22: "weight plate, lever order, time gate (with failsafe), hold the door"):
+# the boss lock ("weight plate, lever order, time gate (with failsafe), hold the door"):
 # depth 1 a key; depth 2 a key, a weight plate or a held door in turn; deeper, all six in turn
 PUZZLES = ('key', 'lever', 'plate', 'order', 'timed', 'hold')
 PLATE_DIST, HOLD_DIST, TIMED_DIST = (3, 5), (1, 2), (4, 7)  # cells from the boss doorway (corridor steps)
 TIMED_BASE, TIMED_PER_CELL = 5.0, 1.6  # seconds the timed gate stays up: base plus per cell of the way back
-HEAVY = ('barrel wdo1 a02', 'cratel4', 'barrel wdo1 a01', 'cratesmall a')  # weight for the plate, if the stone has them
+# weight for the plate: each stage's own upright barrels and crates (stages 1-7 each have some of these)
+HEAVY = ('barrel wdo1 a02', 'cratel4', 'barrel wdo1 a01', 'cratesmall a', 'barrel rusty a1', 'crate rusty a1', 'box rusty big a', 'barrel ubm a01', 'crate ubm a01', 'crate ubm a02', 'barrel mtob a01', 'barrel mtob a02', 'crate mtob b02')
 CLUE = ('bottle_wkr b', 'pot')  # the lever order's clue: 1, 2, 3 of these at each lever's foot
 
 
@@ -2180,7 +2181,7 @@ TRAIL_LEN, TRAIL_CHANCE = 4, 75
 # workshop, kitchen: the first that has a match) whose size equals a whole vanilla room of that purpose on
 # this stone is dressed as that room exactly, cell for cell, as the perfect copy is (without its chair)
 SHOW_TAGS = (6, 8, 5, 3, 2, 1, 7, 4)  # then barracks, store, gaol, latrine when none of those has a match
-# the boss pen (Hunter, 2026-10-22: "a portcullis trap + lever to some boss rooms in order to lure them to,
+# the boss pen ("a portcullis trap + lever to some boss rooms in order to lure them to,
 # and throw them into, the pit"): this percent of boss rooms get a 2x2 pen off one side, its portcullis
 # raised (the mod opens it on arrival) and its lever on the boss room's wall beside the doorway; drop it
 # with the boss inside and the boss counts as beaten (the mod opens the exit gate)
@@ -2976,8 +2977,8 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
             _name, raw = rng.pick(block_fill)
             objects.append(_object(raw, (x2, tp.floor_y, z2), rng.unit() * 360.0))
     remains = next((raw for name, raw in tp.debris if name == REMAINS), None) if themed(tp, REMAINS, stage_no) else None
-    # (easter egg 1, the last descent's remains, was dropped 2026-10-22: Hunter, "last descent makes no
-    # sense if each run is randomized")
+    # (easter egg 1, the last descent's remains, was dropped: a last descent makes no
+    # sense when each run is randomized)
     gaol = next((room for room in lay.rooms if room.kind == 'room' and room.purpose == 'gaol'), None)
     if remains is not None and gaol is not None and depth_of(area) >= 2 and rng.chance(ELARA_CHANCE):
         # easter egg 2: the twelfth name, remains by the bars of the first gaol
@@ -3313,7 +3314,7 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, p
         x, z = world(c, r, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
         spawns.append(_spawn(0x80000000 | rng.pick(roster), (x, tp.floor_y, z), rng.unit() * 2 * math.pi))
     # a companion to find: on the second area of every depth, in the ordinary room that fits who they
-    # are (Hunter, 2026-10-22): the soldier holds the room nearest the locked door, the Order's
+    # are: the soldier holds the room nearest the locked door, the Order's
     # apprentice stopped nearest the maze entry (where what holds the dead is strongest), the bandit
     # hides in the room farthest from everything; ties go to the first room in order
     cid = companion_for(tp, area, met)

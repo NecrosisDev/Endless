@@ -8,7 +8,7 @@ Three roles per companion, all built by convo.py:
 plus a banter topic per other companion inside the main role (BANTER: hourly exchanges while both
 follow; HOPS: the one exchange a lead's line opens with a partner at each occasion).
 
-The cast (Hunter, 2026-10-22):
+The cast:
   Aldric  a soldier of Ardent sent down with the proctor who came about the missing villagers.
           At the hole he could not make himself go down the rope. The proctor went alone. Days
           later Aldric went after him, and now he puts himself in front of everything to make
@@ -612,7 +612,7 @@ TOBIN = {
     ],
 }
 
-# in the order they are found (Hunter, 2026-10-22): the same hole, different times, each as deep as
+# in the order they are found: the same hole, different times, each as deep as
 # they got; Tobin on depth 1, Aldric on depth 2 (the proctor one deeper), Mira on depth 3
 COMPANIONS = {'Tobin': TOBIN, 'Aldric': ALDRIC, 'Mira': MIRA}
 
@@ -708,7 +708,7 @@ CHAIN_TOLD = {
 
 
 # ------------------------------------------------------ one voice per occasion
-# Hunter (2026-10-22): nobody talks over anybody. Each occasion (a talk-zone spot, the hurt line,
+# Nobody talks over anybody. Each occasion (a talk-zone spot, the hurt line,
 # the huge beast, each boss call-out, each first casting) has an order of speakers. Every
 # companion keeps its own node for the occasion, in its own voice, but only one is opened: the
 # first in the order who is in the party (the mod places that one's zone; for the castings the
@@ -798,7 +798,7 @@ DEATHS = {
     },
 }
 
-# Mourning (Hunter): every so often, not only at the death. Three lines per survivor per dead
+# Mourning: every so often, not only at the death. Three lines per survivor per dead
 # companion, in order, once each, an hour of world time apart, while following.
 MOURN = 0x01070101  # opens on its own, one use, the hourly gap of the idle lines
 MOURNING = {

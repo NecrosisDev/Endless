@@ -137,7 +137,7 @@ def build(game: Path) -> tuple[bytes, str]:
     # one record per spot per companion, spot-major; the generator places all three at a spot
     talk_zones = []
     roles_ini = (Path(__file__).resolve().parents[1] / 'out' / 'companions' / 'roles.ini').read_text(encoding='utf-8')
-    # one voice per occasion (Hunter, 2026-10-22): one record per spot per companion, spot-major in
+    # one voice per occasion: one record per spot per companion, spot-major in
     # companion order; the generator places one of them per spot, the first in the spot's order
     # (ini spot_order) who is in the party; that one's line opens the exchange with the next
     main_roles = [int(x) for x in next(l for l in roles_ini.splitlines() if l.startswith('main_roles=')).split('=', 1)[1].split(',')]
@@ -147,7 +147,7 @@ def build(game: Path) -> tuple[bytes, str]:
             talk_zones.append(eg._marker_record(markers[eg.MARKER_ZONE], nid, f'Endless Talk {spot_index}{role}', eg.TALK_ZONE_BOX.get(spot, (300, 150, 300)), eg.MARKER_ZONE, eg.TALK_ZONE_FIRST + spot_index, 0, 0, script))
             nid += 1
     pair_zones = []  # retired: the hops are opened by the speaker's line, not by a zone (the ini key stays, empty)
-    # the backrooms trigger (Hunter, 2026-10-22): a small zone in the corner of the perfect copy
+    # the backrooms trigger: a small zone in the corner of the perfect copy
     wall_zone = eg._marker_record(markers[eg.MARKER_ZONE], nid, 'Endless Wall', (90, 150, 90), eg.MARKER_ZONE, 40, 0, 0, b'LuaEvent(EndlessWall,1);')
     nid += 1
     fire_zones = []
@@ -357,7 +357,7 @@ def build(game: Path) -> tuple[bytes, str]:
         cdb.records.append(rdb.Record(nid, 0, 0, len(f.read_bytes()), f.read_bytes()))
         companions.append(nid)
         nid += 1
-    # boss-lock puzzles (Hunter, 2026-10-22: weight plate, lever order, timed gate, hold the door), after the
+    # boss-lock puzzles (weight plate, lever order, timed gate, hold the door), after the
     # companions so their ids stay put: a portcullis for the boss doorway opened by its own floor plate, and
     # four levers wired to a dummy portcullis (placed out of sight) whose positions the mod reads; the mod
     # drives the puzzle portcullis for the lever puzzles
@@ -399,7 +399,7 @@ def build(game: Path) -> tuple[bytes, str]:
         (('GEWS_UBB02', 'GEWS_UBB02PA'), ('GEFS_UB06B1', 'GEFS_UB06A1')),    # the deepest brick (level 8)
     ]
     # the shipped levels each stage's stone comes from: a prop is placed on a stage only where one
-    # of those levels places it (Hunter's theme rule: nothing vanilla does not pair with the stone)
+    # of those levels places it (theme rule: nothing vanilla does not pair with the stone)
     stage_sources = [('exanima01', 'exanima02', 'exanima03'), ('exanima04',), ('exanima05_sw',), ('exanima05',),
                      ('exanima06',), ('exanima07', 'exanima07_sw'), ('exanima08',)]
     lower_members = {n.lower() for n in members}
@@ -462,7 +462,7 @@ def build(game: Path) -> tuple[bytes, str]:
         prop_stage_line,
         'spot_order=' + next((l for l in roles_ini.splitlines() if l.startswith('spot_order=')), 'spot_order=').split('=', 1)[1],
         f'proctor_boss={next((r.id for r in cdb.records if actor.parse(r.data).name == "Proctor15"), 0)}',
-        # the Archives' demon, Sir (Hunter, 2026-10-22: one roams the backrooms); its first, full-strength record
+        # the Archives' demon, Sir (one roams the backrooms); its first, full-strength record
         f'sir_demon={next((r.id for r in cdb.records if actor.parse(r.data).name == "Sir36"), 0)}',
         'reveal_powers=' + ';'.join(f'{companions[int(e.split(":")[0])]}:{e.split(":")[1]}' for e in next((l for l in roles_ini.splitlines() if l.startswith('reveal_powers=')), 'reveal_powers=').split('=', 1)[1].split(';') if e),
         f'enemies={",".join(map(str, enemies))}',
@@ -481,7 +481,7 @@ DRESS_OUT = {}
 DRESS_CAP = 80  # cell dressings kept per stage and class (the corridor and fallback pools)
 DRESS_SKIP = ('stair', 'door', 'portcul', 'cavebld', 'lever', 'chest', 'trunk', 'bridge', 'brdg', 'uwportal')
 # loose items a room keeps (cups, books, candles...): item records by name, imported into the template
-# (no books, parchments or scrolls: nothing readable down here, and some teach skills; Hunter's lore rule)
+# (no books, parchments or scrolls: nothing readable down here, and some teach skills; the lore rule)
 CLUTTER = ('cup', 'mug', 'bowl', 'plate', 'jug', 'bottle', 'flask', 'candle',
            'inkpot', 'tray', 'spoon', 'brush', 'calipers', 'chisel', 'vase', 'goblet', 'tankard', 'pitcher')
 CLUTTER_NOT = ('chest', 'shelf', 'case', 'lever', 'door', 'key', 'book', 'scroll', 'parchment')
@@ -531,7 +531,7 @@ def build_dress(game: Path, lower_members: set, written_sources: list, db=None) 
     of knocked-over chairs and stools. Offsets from the cell centre, turned to the class's
     canonical orientation; heights from the level's floor. EDR5 adds (4) the outlines of the stage's
     rooms that are not full rectangles (L, T, cross...), 3..7 cells a side, as cell lists, for the
-    generator to stamp (Hunter, 2026-10-22: rooms shaped like the game's own)."""
+    generator to stamp (rooms shaped like the game's own)."""
     out = bytearray(b'EDR5') + struct.pack('<I', len(written_sources))
     next_box = [max(r.id for r in db.records) + 1] if db is not None else [0]
     for sources in written_sources:

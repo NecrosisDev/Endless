@@ -48,7 +48,7 @@ COMPANIONS = list(ed.COMPANIONS)  # found in this order: Tobin, Aldric, Mira
 # carry it from the start: Mira Continuity II (two bindings), Tobin Continuity (one).
 POWERS = {'Mira': [0x201, 0x10205, 0x401, 0x20208, 0x20603], 'Tobin': [0x201, 0x401, 0x2020B]}
 TECHNIQUES = {'Mira': ['Sustain', 'Continuity II', 'Abstraction'], 'Tobin': ['Sustain', 'Continuity', 'Clarity']}
-# Aldric is strong as hell (Hunter): the three fighting skills at five techniques
+# Aldric is strong as hell: the three fighting skills at five techniques
 STRONG = {'Aldric': {0: 25000, 2: 25000, 3: 25000}}  # Close Combat, Armour, Shields
 # The record ships with the thaumaturgy skills but no caster block: Mira hides the talent until
 # her trust reveal, whose dialogue action raises LuaEvent(EndlessReveal, 1); the mod then grants

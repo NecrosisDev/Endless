@@ -150,11 +150,11 @@ local state = {
 local function say(text) api.log("Endless: " .. text) end
 
 -- the title row shows the deepest depth any run reached, so the menu itself is the scoreboard
--- the title row is just ENDLESS, like the game's own rows (Hunter: the title font dropped the
+-- the title row is just ENDLESS, like the game's own rows (the title font dropped the
 -- parentheses and the number); the deepest depth and the last run are told on screen instead
 local function row_label() return "ENDLESS" end
 
--- the second, smaller line under the row: the deepest depth and the last descent (Hunter)
+-- the second, smaller line under the row: the deepest depth and the last descent
 local function row_subtitle()
     local best = tonumber(storage.get("endless.best_depth", 0)) or 0
     if best <= 0 then return nil end
@@ -343,7 +343,7 @@ local function serve_area(area, done)
             note_depth(area)
             api.set_flag("endless_archetype", info.archetype or 0) -- 0 warren, 1 crypt, 2 cistern, 3 mine, 4 halls
             api.set_flag("endless_mutator", info.mutator or 0)     -- 0 none, 1 dark, 2 ambush, 3 silent, 4 collapsed
-            -- easter eggs in this area, for the lines that will answer them (Hunter approves the words first)
+            -- easter eggs in this area, for the lines that will answer them (their words are approved first)
             api.set_flag("endless_egg_elara", info.elara or 0)
             api.set_flag("endless_egg_shrine", info.shrine or 0)
             api.set_flag("endless_egg_copy", info.copy or 0)
@@ -551,7 +551,7 @@ local function boss_fight(snap)
     return false
 end
 
--- Light School casts (Hunter: companions use Guiding Light and Glare): Mira and Tobin, each only after
+-- Light School casts (companions use Guiding Light and Glare): Mira and Tobin, each only after
 -- their talent is granted, present and alive. Glare when anyone in the party was just hit; Guiding
 -- Light in a boss fight. One caster per power per poll, Mira first. Sent straight to the Light School
 -- ("light.cast", the caster by its character handle, else its record id).
@@ -651,7 +651,7 @@ local function boss_beaten(info, how)
     end
 end
 
--- the boss pen (Hunter: lure the boss in, drop the portcullis): raised once on arrival; a pull of its
+-- the boss pen (lure the boss in, drop the portcullis): raised once on arrival; a pull of its
 -- lever while the living boss stands inside the pen's box cages it, which counts as beating it
 local PEN_PULL = 0.5 -- the lever's travel (0..1) that counts as a pull
 local function boss_in_pen(row, box)
@@ -679,7 +679,7 @@ local function watch_pen(info, boss)
     return false
 end
 
--- the boss-lock puzzles (Hunter, 2026-10-22: weight plate, lever order, timed gate with a failsafe, hold
+-- the boss-lock puzzles (weight plate, lever order, timed gate with a failsafe, hold
 -- the door); the generator puts the puzzle's portcullis in the boss doorway (info.puzzle, endless_gen)
 local PUZZLE_POLL_SECONDS = 0.5
 local PLATE_REACH_CM = 90       -- a character this close to the plate's middle stands on it
@@ -897,7 +897,7 @@ events.on("script.event", function(event)
     reveal(MIRA, event.value) -- she tells you (1), is betrayed (2) or sees death near (3); the grant happens once
 end)
 
--- the backrooms (easter egg 4, Hunter): walking into the corner behind the chair in the perfect copy
+-- the backrooms (easter egg 4): walking into the corner behind the chair in the perfect copy
 -- takes you to a vast empty level built for this area; its exit returns you to that room
 local function backrooms_name(area) return gen.floor_name(area + 7) end -- never this area's or the next one's
 local function enter_backrooms()
