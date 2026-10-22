@@ -1176,6 +1176,12 @@ def _puzzle_parts(tp, lay, rng, kind, start, inside, outside, w, h, d_rooms, sta
                 hc = rng.pick(around)
                 hx, hz = world(*hc, w, h, rng.unit() * 0.5 + 0.25, rng.unit() * 0.5 + 0.25)
                 objects.append(_put(raw, (hx, tp.floor_y + dy, hz), yaw_matrix(rng.unit() * 360.0)))
+        # a fallback lever further back on the near side: the lock stays solvable if the plate ignores weights
+        spots = [cell for cell in order if dist[cell] >= FALLBACK_DIST and walls_of(*cell) and cell != pc] or [cell for cell in order if walls_of(*cell) and cell != pc] or [outside]
+        fc = rng.pick(spots)
+        fq = walls_of(*fc)
+        lever_at(fc[0], fc[1], rng.pick(fq) if fq else 0, tp.puzzle_lever_ids[0])
+        info['puzzle_levers'] = tp.puzzle_lever_ids[:1]
         return places, objects, info, pc
     if kind == 'order':
         rooms = [room for room in lay.rooms if room.kind == 'room' and room.centre in near]
@@ -1876,6 +1882,7 @@ def _patch_script(item_db: bytes, area: int, seed: int, event: bytes = b'Endless
 # the boss lock ("weight plate, lever order, time gate (with failsafe), hold the door"):
 # depth 1 a key; depth 2 a key, a weight plate or a held door in turn; deeper, all six in turn
 PUZZLES = ('key', 'lever', 'plate', 'order', 'timed', 'hold')
+FALLBACK_DIST = 6  # cells back from the boss door: the plate's fallback lever
 PLATE_DIST, HOLD_DIST, TIMED_DIST = (3, 5), (1, 2), (4, 7)  # cells from the boss doorway (corridor steps)
 TIMED_BASE, TIMED_PER_CELL = 5.0, 1.6  # seconds the timed gate stays up: base plus per cell of the way back
 # weight for the plate: each stage's own upright barrels and crates (stages 1-7 each have some of these)

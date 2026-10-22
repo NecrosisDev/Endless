@@ -689,6 +689,18 @@ local function in_box(p, box) return p and box and p[1] >= box[1] and p[1] <= bo
 local function puzzle_step(info, pz)
     local kind = info.puzzle
     if kind == "plate" or kind == "hold" then
+        -- the fallback lever further back: a pull raises the gate for good
+        local rows = info.puzzle_levers and api.lever_rows(info.puzzle_levers)
+        local fpos = rows and rows[1] and rows[1].lever_position
+        if fpos then
+            if pz.fbase == nil then pz.fbase = fpos
+            elseif math.abs(fpos - pz.fbase) >= PEN_PULL and api.drive(info.puzzle_gate, true) then
+                pz.solved = true
+                api.set_flag("endless_puzzle_solved", 1)
+                say("the fallback lever raises the gate for good")
+                return
+            end
+        end
         -- a character on the plate holds the gate up: a companion told to wait, or a body dragged onto it
         -- (so a held door needs no companion); an object's weight is the plate's own business (the game's
         -- plate drives the same gate)

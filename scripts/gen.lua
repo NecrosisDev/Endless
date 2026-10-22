@@ -68,6 +68,7 @@ function gen.depth_of(area) return (area - 1) // AREAS_PER_DEPTH + 1 end
 function gen.is_staircase(area) return area % AREAS_PER_DEPTH == 0 end
 -- the boss lock (endless_gen.puzzle_kind, PUZZLES)
 local PUZZLES = {"key", "lever", "plate", "order", "timed", "hold"}
+local FALLBACK_DIST = 6 -- endless_gen
 local PLATE_DIST, HOLD_DIST, TIMED_DIST = {3, 5}, {1, 2}, {4, 7}
 local TIMED_BASE, TIMED_PER_CELL = 5.0, 1.6
 local HEAVY = {"barrel wdo1 a02", "cratel4", "barrel wdo1 a01", "cratesmall a", "barrel rusty a1", "crate rusty a1", "box rusty big a", "barrel ubm a01", "crate ubm a01", "crate ubm a02", "barrel mtob a01", "barrel mtob a02", "crate mtob b02"} -- endless_gen: each stage's own upright barrels and crates
@@ -2151,6 +2152,16 @@ local function puzzle_parts(t, lay, rng, kind, start, ic, ir, oc, orr, w, h, d_r
                 objects[#objects + 1] = ob[4]:sub(1, 8 + 20) .. yaw_matrix(rng:unit() * 360.0) .. spack("<fff", hx, t.floor_y + ob[2], hz) .. ob[4]:sub(8 + 68 + 1)
             end
         end
+        -- endless_gen: a fallback lever further back, in case the plate ignores weights
+        local fspots = {}
+        local function not_plate(cell) return not (cell[1] == pc[1] and cell[2] == pc[2]) end
+        for _, cell in ipairs(order) do if d_of(cell) >= FALLBACK_DIST and #walls_of(cell[1], cell[2]) > 0 and not_plate(cell) then fspots[#fspots + 1] = cell end end
+        if #fspots == 0 then for _, cell in ipairs(order) do if #walls_of(cell[1], cell[2]) > 0 and not_plate(cell) then fspots[#fspots + 1] = cell end end end
+        if #fspots == 0 then fspots[1] = {oc, orr} end
+        local fc = rng:pick(fspots)
+        local fq = walls_of(fc[1], fc[2])
+        lever_at(fc[1], fc[2], #fq > 0 and rng:pick(fq) or 0, t.puzzle_lever_ids[1])
+        info.puzzle_levers = {t.puzzle_lever_ids[1]}
         return places, objects, info, pc
     end
     if kind == "order" then
