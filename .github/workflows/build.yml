@@ -3,7 +3,6 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -12,25 +11,6 @@ permissions:
 
 jobs:
   build:
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Build the mod and its release ZIP
-        run: python -X utf8 -B release.py --without-private
-      - uses: actions/upload-artifact@v7
-        with:
-          name: endless
-          path: dist/*.zip*
-          if-no-files-found: error
-
-  release:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,13 +21,29 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Build the tagged release ZIP
-        run: python -X utf8 -B release.py --without-private --tag "$GITHUB_REF_NAME"
-      # A tag with a hyphen (v0.2.0-rc1) publishes a prerelease. An existing release is never replaced.
-      - name: Publish the GitHub release
+      - name: Build the release ZIP
+        run: python -X utf8 -B release.py --without-private
+      - uses: actions/upload-artifact@v7
+        with:
+          name: endless
+          path: |
+            dist/*.zip*
+          if-no-files-found: error
+      # A push to main whose manifest version has no release yet tags v<version> and publishes it; later pushes
+      # with the same version publish nothing. Bump the version in manifest.toml to release again.
+      - name: Release a new version
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          flags=(--verify-tag --title "Endless $GITHUB_REF_NAME" --generate-notes)
-          [[ "$GITHUB_REF_NAME" == *-* ]] && flags+=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.zip.sha256 --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+          release() {  # <manifest> <tag prefix> <title> <assets...>
+            version=$(tr -d '\r' < "$1" | sed -nE 's/^version = "([^"]+)"$/\1/p' | head -n1)
+            tag="$2$version"; title="$3 v$version"; shift 3
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              echo "$tag is already released"; return 0
+            fi
+            flags=(--target "$GITHUB_SHA" --title "$title" --generate-notes)
+            [[ "$version" == *-* ]] && flags+=(--prerelease)
+            gh release create "$tag" "$@" --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+          }
+          release manifest.toml v "Endless" dist/Endless-*.zip dist/Endless-*.zip.sha256
