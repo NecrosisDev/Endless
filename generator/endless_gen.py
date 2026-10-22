@@ -30,12 +30,14 @@ from __future__ import annotations
 import argparse
 import math
 import struct
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / 'tools' / 'exanimate'))
+# the exanimate format library: EXANIMATE_TOOLS, else the Exanimate workspace this repo was split from
+_TOOLS = os.environ.get('EXANIMATE_TOOLS') or str(Path(__file__).resolve().parents[3] / 'tools' / 'exanimate')
+sys.path.insert(0, _TOOLS)
 from exanimate import level, rdb  # noqa: E402
 
 CELL = 600.0
@@ -44,6 +46,117 @@ SIDE_YAW = [0.0, -90.0, -180.0, 90.0]  # a door facing side q (from shipped plac
 WALL, DOOR = 7, 0xB
 BUILT = 0x80000
 ROCK = 0xFFFF
+ROUTE_MARGIN = 8  # cells beyond the two ends a corridor search may use
+# corridors that wander and widen (2026-10-22, the game's own corridors bend and vary): a turn costs
+# TURN_COST, and each cell a fixed 0..2 more from a hash of its place and the area (WANDER), so routes
+# drift instead of running ruler-straight; a quarter of corridors WIDE_MIN cells or longer get a second
+# lane along their middle third. Hashes, not the rng, so the rest of the plan is unchanged by them.
+TURN_COST = 2
+# corridor sectors (2026-10-22, from a static decompile of the game's culling, 141840/143C20/5B170): the
+# game makes one sector of every run of cells joined by open sides; a doorway side ends it. It draws the
+# camera's sector whole, those one doorway away only through their openings, and nothing further. A
+# corridor network joined only by open sides is one sector the size of the area, so from any corridor the
+# game drew all of it and nearly every room. Corridors are cut into pieces of at most SEG_MAX cells,
+# joined by doorway sides, as the shipped levels' corridors are.
+SEG_MAX = 8
+WIDE_MIN, WIDE_CHANCE = 8, 25
+
+
+def _wander(lay, c: int, r: int) -> int:
+    v = ((c * 73856093) ^ (r * 19349663) ^ lay.wander) & 0xFFFF
+    return 2 if v % 10 < 2 else 1 if v % 10 < 4 else 0
+# cell dressings (Hunter, 2026-10-22: scattered props clipped walls and left the middle empty): whole
+# cells of the game's own levels, kept by their wall pattern. Masks: bit q is a wall on side q (0 N,
+# 1 W, 2 S, 3 E); the classes are none, N, N+W (corner), N+S (passage), N+W+S (dead end).
+DRESS_CLASSES = [0, 1, 3, 5, 7]
+DRESS_ROOM_CHANCE, DRESS_COLLAPSED_CHANCE, DRESS_CORRIDOR_CHANCE = 100, 100, 90  # 2026-10-22: toward the shipped levels' density (tests/measure_dressing.py)
+# frame budget: the room dressing chance falls as an area grows past DRESS_FULL_CELLS room cells (not
+# below DRESS_MIN_CHANCE), and no cell is dressed once the area holds OBJECT_CAP objects (level 1 of
+# the game has about 3,400)
+DRESS_FULL_CELLS, DRESS_MIN_CHANCE, OBJECT_CAP = 1400, 50, 5200  # 5200: vanilla level 5's objects per cell over an Endless area (frame cost unmeasured)
+# rooms that tell a story (Hunter, 2026-10-22): every enclosed room of the stage's own levels is kept
+# whole and tagged by what is in it; an Endless room takes one source room by its purpose and fills
+# its cells from that room's cells of the same wall pattern. Seats get loose angles, and now and
+# then one lies knocked over in one of the poses the game's own levels use.
+DRESS_TAGS = ['misc', 'store', 'barracks', 'kitchen', 'latrine', 'workshop', 'shrine', 'gaol', 'surgery', 'study']
+PURPOSE_TAG = {'store': 1, 'barracks': 2, 'kitchen': 3, 'latrine': 4, 'workshop': 5, 'shrine': 6, 'gaol': 7, 'surgery': 8}
+TAG_PURPOSE = {tag: purpose for purpose, tag in PURPOSE_TAG.items()}
+SEAT_JITTER = 15.0  # degrees either way (30 left seats facing their tables less often than the shipped levels')
+# rooms and their neighbours (Hunter, 2026-10-22: big and small rooms, rooms that need certain
+# neighbours and rooms that cannot sit by others). Neighbours: ordinary rooms within NEIGHBOUR_GAP
+# cells of each other. The kitchen wants a store or another kitchen (a mess) beside it when the area
+# has a store; the gaol and the latrine keep away from the kitchen; the shrine keeps apart from the
+# living rooms; latrines, gaols and stores are small rooms, kitchens, barracks and shrines big ones.
+NEIGHBOUR_GAP = 4
+SHRINE_APART = ('kitchen', 'barracks', 'latrine', 'workshop', 'store')
+SMALL_PURPOSES, SMALL_MAX = ('latrine', 'gaol', 'store'), 16
+BIG_PURPOSES, BIG_MIN = ('kitchen', 'barracks', 'shrine'), 6
+NEIGHBOUR_PASSES = 2
+ITEM_CAP = 200  # loose table items (cups, books...) an area may carry
+# easter eggs (Hunter, 2026-10-22). Dialogue for them waits for his approval; these are the places.
+#  1. your last descent: remains in the farthest room of the area where the last run ended;
+#  2. the twelfth name: remains in the first gaol, now and then (from depth 2);
+#  3. Bram's shrine: the carving in the treasury, once a run, from depth 6, where the stone has it;
+#  4. a perfect copy: now and then one room of the catacombs is one of the game's own rooms exactly;
+#  5. depth 13: every lamp cold blue; 6. depth 50 and every 50 after: the quiet room holds one chair.
+REMAINS = 'skelbase_physics'
+CARVING = 'carving stla a1'
+ELARA_CHANCE, COPY_CHANCE = 15, 4
+BLUE_DEPTH, BLUE_LIGHT = 13, (0.18, 0.32, 0.7)
+CHAIR_DEPTHS = 50
+# the backrooms (Hunter, 2026-10-22, turning the perfect copy into a reference): a chair in the copy's
+# corner faces the wall; walking into the corner behind it takes you to a vast, empty level of the same
+# stone, every room alike under the same dull yellow light, no one in it; the way back is behind a
+# locked door whose key lies somewhere in it, and it returns you to the room that sent you
+BACK_LIGHT, BACK_STRENGTH, BACK_GRID = (0.62, 0.56, 0.3), 0.6, 64
+# its furniture (Hunter, 09:30: "uncanny layouts of props, furniture"): sparse and wrong. Chairs in rows
+# facing a wall, beds stood on end, one thing dead centre, the same chair and bucket in the same spot
+# room after room, and in the biggest room a table set for one. Only the stone's own vanilla props.
+# Out of 100 per ordinary room: rows below 12, beds below 20, centre below 32, the twin below 50.
+BACK_ROWS, BACK_BEDS, BACK_CENTRE, BACK_TWIN = 12, 20, 32, 50
+BACK_PROPS = ('chair a', 'table_m_re a', 'bed b01', 'coffin01', 'bucket wod a01', 'stool a')
+BACK_CENTRE_PROPS = ('chair a', 'coffin01', 'bucket wod a01', 'stool a')
+BED_ON_END = [0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]  # bed b01's long model x axis turned upright
+BED_HALF = 111.0  # half of bed b01's length (its model x runs -111..111): the lift that stands it on the floor
+# chair a's backrest is on its model -z side (its vertices above 70 sit 22 units toward -z), so with no
+# turn it faces south (+z) and half a turn faces north. Rows only go on north and south walls, where
+# that holds under either matrix convention.
+SIZE_FACTOR = 2  # a source room within this factor of the room's size is preferred (a private kitchen, a mess hall)
+MAX_ROOMS = 60     # ordinary rooms an area may try for
+EXIT_TRIES = 6     # rooms tried as the exit, farthest first, until a boss room fits beside it
+# close quarters (Hunter, 2026-10-22: "mix in some smaller, tighter, close quarters areas with the large
+# rooms to fill in gaps"): after the plan, small rooms tucked one cell from any room where ground is left
+FILL_SHARE = 35        # percent of the plan's room count added as small rooms
+FILL_SIZE = (2, 3)     # their sides, in cells
+FILL_TRIES = 400
+FILL_MAX_ROOMS = 75    # rooms in all, fill included (the build's memory and time grow with it)
+# room outlines from the stage's own levels (dressing file EDR5): this percent of ordinary rooms takes one,
+# doubled when it is 4 cells a side or less (Endless rooms run about twice the game's); the room's centre
+# cell must be in it (corridors aim there), else the room stays a rectangle
+STAMP_CHANCE = 30
+# the plan grows along a spine, then wings (2026-10-22, from tests/measure_vanilla.py: the shipped levels
+# have ~2.9 doorways a room, ~0.5 loops a room and 17 % dead-end rooms; Endless had 2.3, 0.3 and 25 %).
+# The first third of the rooms is a chain, each beside the last, heading one way more often than not;
+# the rest are wings: half the time beside the newest room (a district grows), else beside a spine room.
+SPINE_SHARE = 3        # one room in this many is on the spine (at least 3)
+SPINE_STRAIGHT = 60    # percent of spine rooms that keep the heading
+SPINE_STALL = 40       # failed tries in a row that end the spine early
+WING_GROW = 50         # percent of wing rooms placed beside the newest room
+# extra corridors join a room to one of its nearest rooms: rooms * (LOOP_BASE + LOOP_PER * arch loops) / 100
+LOOP_BASE, LOOP_PER, LOOP_NEAREST = 40, 4, 3
+# bigger areas, growing with depth (Hunter, 2026-10-22): the grid is 56 cells a side at depth 1, 60 at
+# depth 2 and 64 from depth 3 (64 x 64 is the largest grid the game's own levels use); the room
+# count keeps growing with depth inside it
+GRID_BY_DEPTH = {1: 56, 2: 60}
+GRID_MAX = 64
+# doors barricaded from the room side (Hunter): the doorway stays built, props block it, and another
+# way in must exist; 1 + depth // 2 of them, at most 4
+BLOCKERS = ('barricade d', 'barricade b', 'barricade c')
+BLOCK_FILL = ('cratel4', 'barrel wdo1 a02', 'cratesmall a', 'sack a')
+MAX_BLOCKED = 4
+# the shipped grids ring their border with fixed words (top, left, right, bottom; a corner is the
+# OR of its two edges): exanima01/02/05_sw all carry exactly these
+BORDER_TOP, BORDER_LEFT, BORDER_RIGHT, BORDER_BOTTOM = 0x20010007, 0x120070, 0x12007000, 0x1200700
 TAG_MARKER = 0x8000AC07
 TAG_NAME = 0x10000000
 TAG_DOOR = 0x40000
@@ -51,7 +164,51 @@ TAG_CONTAINER = 0x20000
 TAG_DEVICE = 0x10000
 LEVER_Y = 145.0  # wall levers in exanima01 sit at 135..170 cm
 MARKER_ARRIVAL, MARKER_EXIT, MARKER_ZONE = 0x1040, 0x1120, 0x1110
-PROP_NAMES = ['barrel wdo1 a02', 'cratesmall a', 'cratesmall b', 'sack a', 'stool a', 'chair a', 'bucket wod a01', 'cratel4', 'coffin01', 'pot9', 'basket_wkr e']
+PROP_NAMES = ['barrel wdo1 a02', 'cratesmall a', 'cratesmall b', 'sack a', 'stool a', 'chair a', 'bucket wod a01', 'cratel4', 'coffin01', 'pot9', 'basket_wkr e',
+              'cage_human a', 'bathtub mtod a01', 'stretcher', 'cookpot a', 'table_m_re a', 'bench b01', 'sawtwohand',  # set-piece rooms
+              'barricade d', 'barricade b', 'barricade c',  # blocked doors
+              'carving stla a1']  # an easter egg: the shrine's carving
+# area archetypes (Hunter's review, 2026-10-22): what an area is changes the layout rules, not only
+# the dressing. rooms: wanted before +2 per depth; size / hall_size: a side in cells; hall: % of
+# rooms that are halls (from depth 2); loops: extra corridors beyond the tree; style: % of rooms
+# on the second wall/floor set; big: one 8..9 hall first (the cistern); spurs: dead-end corridors.
+# gap: cells of ground between a new room and the room it is placed beside (Hunter: the areas were
+# mostly hallways; rooms now grow out of each other instead of landing anywhere on the grid)
+ARCHETYPES = {
+    'warren': dict(rooms=16, size=(3, 7), hall=25, hall_size=(5, 8), loops=5, style=30, big=False, spurs=2, gap=(1, 3)),
+    'crypt': dict(rooms=22, size=(2, 4), hall=0, hall_size=(5, 7), loops=2, style=20, big=False, spurs=3, gap=(1, 2)),
+    'cistern': dict(rooms=12, size=(3, 6), hall=10, hall_size=(5, 8), loops=5, style=40, big=True, spurs=2, gap=(1, 3)),
+    'mine': dict(rooms=8, size=(2, 4), hall=0, hall_size=(5, 7), loops=1, style=10, big=False, spurs=5, gap=(4, 8)),
+    'halls': dict(rooms=12, size=(5, 8), hall=60, hall_size=(6, 9), loops=4, style=50, big=False, spurs=2, gap=(1, 3)),
+    # the backrooms: many same-sized rooms, a cell apart, looped every way (not in ARCH_ORDER)
+    'backrooms': dict(rooms=28, size=(3, 4), hall=0, hall_size=(3, 4), loops=20, style=0, big=False, spurs=4, gap=(1, 1)),
+}
+ARCH_ORDER = ['warren', 'crypt', 'cistern', 'mine', 'halls']  # depth 1 is always a warren
+# mutators: one twist per area from depth 3, three areas in ten; the mod publishes it (endless_mutator)
+MUTATORS = ['dark', 'ambush', 'silent', 'collapsed']
+# lamp colour by tile-set stage (rooms; corridors are the same at 0.65): the stone sets the light
+STAGE_LIGHT = {1: (0.55, 0.38, 0.2), 2: (0.5, 0.42, 0.3), 3: (0.25, 0.4, 0.45), 4: (0.5, 0.3, 0.15), 5: (0.6, 0.25, 0.1), 6: (0.35, 0.3, 0.45), 7: (0.45, 0.2, 0.2)}
+QUIET_LIGHT = (0.6, 0.5, 0.35)
+# light by use (2026-10-22): an ordinary room's lamp hangs halfway between its middle and the middle of
+# what stands in it, as bright as its use asks (work rooms brighter, stores and cells dimmer); no more lamps
+USE_LIGHT = {'kitchen': 1.15, 'workshop': 1.15, 'surgery': 1.1, 'shrine': 1.05, 'barracks': 0.9, 'store': 0.65, 'latrine': 0.55, 'gaol': 0.5}
+# room purposes (Hunter's review, 2026-10-22): what an ordinary room is for decides its props,
+# its enemies, its chest and whether a healing salve lies there. The quiet room (one per area
+# from depth 2) spawns nothing and always holds a chest and a salve: a place to breathe.
+PURPOSE_PROPS = {'store': ['barrel wdo1 a02', 'cratesmall a', 'cratesmall b', 'sack a', 'cratel4', 'basket_wkr e'],
+                 'barracks': ['stool a', 'chair a', 'bucket wod a01', 'pot9'],
+                 'shrine': ['coffin01', 'pot9'],
+                 'quiet': ['stool a', 'chair a', 'bucket wod a01'],
+                 'gaol': ['cage_human a', 'bucket wod a01', 'stool a'],
+                 'surgery': ['bathtub mtod a01', 'stretcher', 'sawtwohand', 'table_m_re a'],
+                 'kitchen': ['cookpot a', 'table_m_re a', 'bench b01', 'barrel wdo1 a02'],
+                 'plain': PROP_NAMES[:11]}
+PROP_COUNT_SCALE = {'store': 2, 'gaol': 2}
+HOME_WEIGHT = {'barracks': 3, 'gaol': 2}  # quiet rooms are not homes
+CHEST_CHANCE = {'store': 90, 'quiet': 100, 'shrine': 60, 'gaol': 30, 'surgery': 50, 'kitchen': 60}
+ENEMY_CAP = 40      # ordinary enemies per area (the curve was uncapped: 106 at area 100)
+BOSS_CAP = 3        # bosses in one boss room
+MINION_CAP = 6
 STAIRS_NAME = 'stair_ls a300_6'
 # wall-mounted props: (distance from the wall as a cell fraction, height, yaw relative to the wall's side)
 # medians of 261/39/52/55/75/94/41/55/78 shipped placements in levels 1-3 (offline, 2026-10-22)
@@ -132,10 +289,16 @@ class Room:
     entry: tuple = (0, 0)  # maze: the node cell corridors aim at
     goal: tuple = (0, 0)  # maze: the node cell the exit zone sits in
     style: int = 0  # layer-2 word for the room's cells: 0 plain, 0x11 the pillared wall/floor set pair
+    purpose: str = 'plain'  # ordinary rooms: plain | store | barracks | shrine | quiet | gaol | surgery | kitchen | latrine | workshop
+    copy: bool = False  # an exact copy of a source room (easter egg 4)
+    show: bool = False  # the area's showpiece: a vanilla room of its purpose, exactly (pick_showpiece)
+    src: int = -1  # the source room of the dressing (index into the stage's rooms), chosen with the purpose
+    cut: frozenset = frozenset()  # cells of the rectangle that are not built (an L room, an octagon)
+    pillars: bool = False  # a hall with four pillars in its inner corners
 
     @property
     def cells(self):
-        return [(c, r) for r in range(self.r0, self.r1 + 1) for c in range(self.c0, self.c1 + 1)]
+        return [(c, r) for r in range(self.r0, self.r1 + 1) for c in range(self.c0, self.c1 + 1) if (c, r) not in self.cut]
 
     @property
     def centre(self):
@@ -144,7 +307,7 @@ class Room:
         return ((self.c0 + self.c1) // 2, (self.r0 + self.r1) // 2)
 
     def contains(self, c: int, r: int) -> bool:
-        return self.c0 <= c <= self.c1 and self.r0 <= r <= self.r1
+        return self.c0 <= c <= self.c1 and self.r0 <= r <= self.r1 and (c, r) not in self.cut
 
     def touches(self, other: Room, gap: int = 1) -> bool:
         return not (self.c1 + gap < other.c0 or other.c1 + gap < self.c0 or self.r1 + gap < other.r0 or other.r1 + gap < self.r0)
@@ -168,10 +331,19 @@ class Layout:
     bypass: tuple = ()  # (goal cell, outside cell with the gate, lever side q in the goal cell) of the companion bypass
     bypass_cells: list = field(default_factory=list)  # the bypass corridor's cells, entry end first
     key_cell: tuple = ()  # where the key (or lever) of the keyed door lies
+    spur_ends: list = field(default_factory=list)  # the last cell of each dead-end corridor (a chest may lie there)
+    treasury: object = None  # the hidden room behind a secret door (a rare chest and the second salve)
+    wing: tuple = ()  # (near cell, far cell, lever cell, lever side): the portcullis that cuts off the boss wing
+    blocked: set = field(default_factory=set)  # doorway edges barricaded shut (frozensets)
+    blocked_doors: list = field(default_factory=list)  # the same as (room cell, corridor cell), in order
+    archetype: str = 'warren'
+    mutator: str = 'none'
     terrain: bytes = b''  # the .rft served with the level
     gate: tuple = ()  # ((boss cell), (exit cell)) of the gate the boss death opens, when a boss room exists
+    pen: tuple = ()  # ((pen cell), (boss cell), pen room) of the boss pen (PEN_CHANCE)
 
     CORRIDOR = 10_000
+    wander = 0  # the corridor hash salt of this plan (generate_layout)
 
     def at(self, c: int, r: int) -> int:
         return self.owner[r * self.w + c] if 0 <= c < self.w and 0 <= r < self.h else -1
@@ -180,7 +352,13 @@ class Layout:
         return self.at(c, r) >= 0
 
     def is_door(self, a, b) -> bool:
-        return (a, b) in self.doors or (b, a) in self.doors
+        # a set kept beside the list (appended to or replaced whole, as in gen.lua's Layout:is_door)
+        if getattr(self, '_door_list', None) is not self.doors:
+            self._door_list, self._door_n, self._door_set = self.doors, 0, set()
+        for d in self.doors[self._door_n:]:
+            self._door_set.add(frozenset(d))
+        self._door_n = len(self.doors)
+        return frozenset((a, b)) in self._door_set
 
     @property
     def exit_room(self) -> Room:
@@ -257,29 +435,42 @@ def _route(lay: Layout, a, b, blocked) -> list:
     (cell, heading) states with insertion-order ties, so the native port matches."""
     w, h = lay.w, lay.h
     INF = 1 << 30
+    # the search stays inside a box round the two ends (ROUTE_MARGIN cells beyond them): a
+    # corridor never needs to wander further, and the box keeps the search to a few hundred
+    # states instead of the whole grid (the build runs under the runtime's instruction budget)
+    minc, maxc = max(1, min(a[0], b[0]) - ROUTE_MARGIN), min(w - 2, max(a[0], b[0]) + ROUTE_MARGIN)
+    minr, maxr = max(1, min(a[1], b[1]) - ROUTE_MARGIN), min(h - 2, max(a[1], b[1]) + ROUTE_MARGIN)
     best = {}
-    buckets = {0: [(a, -1, [a])]}
+    parent = {}  # state -> the state it was reached from (a state is expanded once, at its final cost)
+    buckets = {0: [(a, -1)]}
     cost = 0
-    while cost < 4 * (w + h) and buckets:
+    while cost < 8 * (w + h) and buckets:
         if cost not in buckets:
             cost += 1
             continue
-        for cell, heading, path in buckets.pop(cost):
+        for cell, heading in buckets.pop(cost):
             if best.get((cell, heading), INF) < cost:
                 continue
             if cell == b:
+                path = []
+                state = (cell, heading)
+                while state is not None:
+                    path.append(state[0])
+                    state = parent.get(state)
+                path.reverse()
                 return path
             for q, (dx, dz) in enumerate(SIDE):
                 n = (cell[0] + dx, cell[1] + dz)
-                if not (1 <= n[0] < w - 1 and 1 <= n[1] < h - 1):
+                if not (minc <= n[0] <= maxc and minr <= n[1] <= maxr):
                     continue
                 if n != b and n in blocked:
                     continue
-                c2 = cost + 1 + (3 if heading not in (-1, q) else 0)
+                c2 = cost + 1 + _wander(lay, *n) + (TURN_COST if heading not in (-1, q) else 0)
                 if best.get((n, q), INF) <= c2:
                     continue
                 best[(n, q)] = c2
-                buckets.setdefault(c2, []).append((n, q, path + [n]))
+                parent[(n, q)] = (cell, heading)
+                buckets.setdefault(c2, []).append((n, q))
         cost += 1
     return []
 
@@ -297,6 +488,18 @@ def _carve_corridor(lay: Layout, rng: Rng, a: Room, b: Room) -> None:
         if lay.owner[rr * lay.w + cc] == -1 and not any(p.contains(cc, rr) for p in protected):
             lay.owner[rr * lay.w + cc] = Layout.CORRIDOR
             lay.corridor_cells.append((cc, rr))
+    # a second lane along the middle third, on the left of the way, now and then
+    (ac_, ar_), (bc_, br_) = a.centre, b.centre
+    pick = ((ac_ * 73856093) ^ (ar_ * 19349663) ^ (bc_ * 83492791) ^ (br_ * 2654435) ^ lay.wander) & 0xFFFF
+    if len(path) >= WIDE_MIN and pick % 100 < WIDE_CHANCE:
+        third = len(path) // 3
+        for k in range(third, 2 * third):
+            (cc, rr), (nc, nr) = path[k], path[k + 1]
+            sc, sr = cc - (nr - rr), rr + (nc - cc)
+            if (lay.owner[rr * lay.w + cc] == Layout.CORRIDOR and 2 <= sc <= lay.w - 3 and 2 <= sr <= lay.h - 3
+                    and lay.owner[sr * lay.w + sc] == -1 and not any(p.c0 <= sc <= p.c1 and p.r0 <= sr <= p.r1 for p in protected)):
+                lay.owner[sr * lay.w + sc] = Layout.CORRIDOR
+                lay.corridor_cells.append((sc, sr))
     for (x1, z1), (x2, z2) in zip(path, path[1:]):
         o1, o2 = lay.at(x1, z1), lay.at(x2, z2)
         if o1 >= 0 and o2 >= 0 and o1 != o2 and not lay.is_door(((x1, z1)), ((x2, z2))):
@@ -320,73 +523,144 @@ def _reachable(lay: Layout, start) -> set:
     return seen
 
 
-def generate_layout(rng: Rng, w: int, h: int, area: int, start_cell) -> Layout:
-    """Rooms (2..5 cells a side) that never touch, a 3x3 start room around
+def generate_layout(rng: Rng, w: int, h: int, area: int, start_cell, arch_name: str = 'warren', block_doors: bool = False, plain: bool = False, shapes=None) -> Layout:
+    """Rooms that never touch (sizes and counts by archetype), a 3x3 start room around
     `start_cell`, the exit room farthest from it (a maze from depth 2), corridors
     along a nearest-neighbour spanning tree (the exit room only ever a leaf) plus a
     few loops, connectivity repaired by BFS, and exactly one doorway into the exit."""
     depth = depth_of(area)
+    arch = ARCHETYPES[arch_name]
     sc, sr = start_cell
     rooms = [Room(sc - 1, sr - 1, sc + 1, sr + 1, 'start')]
-    wanted = min(8 + 2 * depth, 18)
+    wanted = min(2 * arch['rooms'] + 3 * depth, MAX_ROOMS)  # Hunter (2026-10-22): bigger areas, growing with depth
     attempts = 0
-    while len(rooms) < wanted and attempts < 600:
+    big_done = not arch['big']
+    spine_n = max(3, wanted // SPINE_SHARE)
+    heading = rng.below(4)
+    stall = 0
+    while len(rooms) < wanted and attempts < 2000:
         attempts += 1
-        hall = depth >= 2 and rng.chance(25)
-        rw = rng.between(5, 7) if hall else rng.between(2, 5)
-        rh = rng.between(5, 7) if hall else rng.between(2, 5)
-        c0 = rng.between(2, w - 3 - rw)
-        r0 = rng.between(2, h - 3 - rh)
+        if len(rooms) < spine_n and stall >= SPINE_STALL:
+            spine_n = len(rooms)  # the spine is boxed in: wings from here
+        stamp = None
+        if not big_done:
+            rw, rh = rng.between(8, 9), rng.between(8, 9)
+        else:
+            hall = depth >= 2 and rng.chance(arch['hall'])
+            lo, hi = arch['hall_size'] if hall else arch['size']
+            rw = rng.between(lo, hi)
+            rh = rng.between(lo, hi)
+            if shapes and rng.chance(STAMP_CHANCE):  # a room shaped like one of the stone's own
+                stamp = rng.pick(shapes)
+                k = 2 if max(stamp[0], stamp[1]) <= 4 else 1
+                rw, rh = stamp[0] * k, stamp[1] * k
+        # beside a room already placed: a side, a gap of ground, and an offset along that side
+        if len(rooms) < spine_n:  # the spine: beside the last room, mostly onward
+            anchor = rooms[-1]
+            q = heading if rng.chance(SPINE_STRAIGHT) else rng.below(4)
+        else:  # a wing: the newest district grows, or a new one starts off the spine
+            anchor = rooms[-1] if rng.chance(WING_GROW) else rooms[rng.below(spine_n)]
+            q = rng.below(4)
+        stall += 1
+        gap = rng.between(*arch['gap'])
+        if q in (0, 2):
+            c0 = anchor.c0 + rng.between(-(rw - 1), anchor.c1 - anchor.c0)
+            r0 = anchor.r0 - gap - rh if q == 0 else anchor.r1 + gap + 1
+        else:
+            r0 = anchor.r0 + rng.between(-(rh - 1), anchor.r1 - anchor.r0)
+            c0 = anchor.c0 - gap - rw if q == 1 else anchor.c1 + gap + 1
+        if not (2 <= c0 and c0 + rw - 1 <= w - 3 and 2 <= r0 and r0 + rh - 1 <= h - 3):
+            continue
         room = Room(c0, r0, c0 + rw - 1, r0 + rh - 1)
         if any(room.touches(o) for o in rooms):
             continue
-        room.style = 0x11 if rng.chance(30) else 0
+        big_done = True
+        stall = 0
+        room.style = 0x11 if rng.chance(arch['style']) else 0
+        if stamp is not None:
+            k = rw // stamp[0]
+            mask = {(c0 + dc * k + i, r0 + dr * k + j) for dc, dr in stamp[2] for i in range(k) for j in range(k)}
+            if room.centre in mask:
+                room.cut = frozenset((c, r) for r in range(room.r0, room.r1 + 1) for c in range(room.c0, room.c1 + 1) if (c, r) not in mask)
+        elif rw >= 4 and rh >= 4 and rng.chance(35):
+            room.cut = _room_cut(rng, room)
         rooms.append(room)
     start = rooms[0]
-    far = max(range(1, len(rooms)), key=lambda i: abs(rooms[i].centre[0] - start.centre[0]) + abs(rooms[i].centre[1] - start.centre[1]))
-    rooms[far].kind = 'exit'
-    # from depth 2 the exit is a maze; it replaces the farthest room when a rect fits
-    if depth >= 2:
-        m = 7 + 2 * min(depth - 2, MAX_DEPTH_MAZE - 2)
-        others = rooms[:far] + rooms[far + 1 :]
-        placed = None
-        for _ in range(200):
-            c0 = rng.between(2, w - 3 - m)
-            r0 = rng.between(2, h - 3 - m)
-            if _rect_free(others, c0, r0, c0 + m - 1, r0 + m - 1):
-                placed = (c0, r0)
-                break
-        if placed is not None:
-            c0, r0 = placed
-            corners = [(c0, r0), (c0 + m - 1, r0), (c0, r0 + m - 1), (c0 + m - 1, r0 + m - 1)]
-            entry = min(corners, key=lambda p: abs(p[0] - start.centre[0]) + abs(p[1] - start.centre[1]))
-            goal = (c0 + m - 1 - (entry[0] - c0), r0 + m - 1 - (entry[1] - r0))
-            rooms[far] = Room(c0, r0, c0 + m - 1, r0 + m - 1, 'maze', entry, goal)
-    # the boss room: 4..5 cells a side, touching the exit at its entry cell (the maze's entry node, or
-    # any boundary cell of a plain exit room); the exit is then reachable only through it
-    exit_rect = rooms[far]
+    # the exit: the farthest room from the start; when no boss room fits beside it (or beside the maze
+    # that replaces it), the next farthest, up to EXIT_TRIES (2026-10-22: some areas had no boss)
+    order = sorted(range(1, len(rooms)), key=lambda i: (100000 - abs(rooms[i].centre[0] - start.centre[0]) - abs(rooms[i].centre[1] - start.centre[1])) * 1000 + i)
+    tries = order[:EXIT_TRIES]
     boss = None
     gate = None
-    entry_cells = [exit_rect.entry] if exit_rect.kind == 'maze' else [(c, r) for (c, r) in exit_rect.cells if c in (exit_rect.c0, exit_rect.c1) or r in (exit_rect.r0, exit_rect.r1)]
-    for attempt in range(240):
-        ec, er = rng.pick(entry_cells)
-        q = rng.below(4)
-        bc, br = ec + SIDE[q][0], er + SIDE[q][1]  # the boss cell next to the entry cell
-        bw, bh = (rng.between(4, 5), rng.between(4, 5)) if attempt < 120 else (rng.between(3, 4), rng.between(3, 4))
-        c0 = bc - rng.below(bw) if SIDE[q][1] != 0 else (bc if SIDE[q][0] > 0 else bc - bw + 1)
-        r0 = br - rng.below(bh) if SIDE[q][0] != 0 else (br if SIDE[q][1] > 0 else br - bh + 1)
-        c1, r1 = c0 + bw - 1, r0 + bh - 1
-        if not (2 <= c0 and c1 <= w - 3 and 2 <= r0 and r1 <= h - 3):
-            continue
-        probe = Room(c0, r0, c1, r1, 'boss')
-        if probe.touches(exit_rect, 0) or any(probe.touches(o) for i, o in enumerate(rooms) if i != far):
-            continue
-        boss = probe
-        gate = ((ec, er), (bc, br))  # (exit side, boss side)
-        break
+    for k, far in enumerate(tries):
+        plain_exit = rooms[far]
+        rooms[far].kind = 'exit'
+        # from depth 2 the exit is a maze; it replaces the farthest room when a rect fits
+        if depth >= 2:
+            m = 7 + 2 * min(depth - 2, MAX_DEPTH_MAZE - 2)
+            others = rooms[:far] + rooms[far + 1 :]
+            placed = None
+            for _ in range(200):
+                c0 = rng.between(2, w - 3 - m)
+                r0 = rng.between(2, h - 3 - m)
+                if _rect_free(others, c0, r0, c0 + m - 1, r0 + m - 1):
+                    placed = (c0, r0)
+                    break
+            if placed is not None:
+                c0, r0 = placed
+                corners = [(c0, r0), (c0 + m - 1, r0), (c0, r0 + m - 1), (c0 + m - 1, r0 + m - 1)]
+                entry = min(corners, key=lambda p: abs(p[0] - start.centre[0]) + abs(p[1] - start.centre[1]))
+                goal = (c0 + m - 1 - (entry[0] - c0), r0 + m - 1 - (entry[1] - r0))
+                rooms[far] = Room(c0, r0, c0 + m - 1, r0 + m - 1, 'maze', entry, goal)
+        # the boss room: 4..5 cells a side, touching the exit at its entry cell (the maze's entry node, or
+        # any boundary cell of a plain exit room); the exit is then reachable only through it
+        exit_rect = rooms[far]
+        entry_cells = [exit_rect.entry] if exit_rect.kind == 'maze' else [(c, r) for (c, r) in exit_rect.cells if c in (exit_rect.c0, exit_rect.c1) or r in (exit_rect.r0, exit_rect.r1)]
+        for attempt in range(240):
+            ec, er = rng.pick(entry_cells)
+            q = rng.below(4)
+            bc, br = ec + SIDE[q][0], er + SIDE[q][1]  # the boss cell next to the entry cell
+            bw, bh = (rng.between(4, 5), rng.between(4, 5)) if attempt < 120 else (rng.between(3, 4), rng.between(3, 4))
+            c0 = bc - rng.below(bw) if SIDE[q][1] != 0 else (bc if SIDE[q][0] > 0 else bc - bw + 1)
+            r0 = br - rng.below(bh) if SIDE[q][0] != 0 else (br if SIDE[q][1] > 0 else br - bh + 1)
+            c1, r1 = c0 + bw - 1, r0 + bh - 1
+            if not (2 <= c0 and c1 <= w - 3 and 2 <= r0 and r1 <= h - 3):
+                continue
+            probe = Room(c0, r0, c1, r1, 'boss')
+            if probe.touches(exit_rect, 0) or any(probe.touches(o) for i, o in enumerate(rooms) if i != far):
+                continue
+            boss = probe
+            gate = ((ec, er), (bc, br))  # (exit side, boss side)
+            break
+        if boss is not None:
+            break
+        if k < len(tries) - 1:  # this one stays an ordinary room; the next farthest is tried
+            plain_exit.kind = 'room'
+            rooms[far] = plain_exit
     if boss is not None:
         rooms.append(boss)
     boss_index = len(rooms) - 1 if boss is not None else -1
+    # (after the exit and the boss room, so they never take the ground those need)
+    fill = min(len(rooms) * FILL_SHARE // 100, FILL_MAX_ROOMS - len(rooms))
+    placed = tries = 0
+    while placed < fill and tries < FILL_TRIES:
+        tries += 1
+        rw, rh = rng.between(*FILL_SIZE), rng.between(*FILL_SIZE)
+        anchor = rng.pick(rooms)
+        q = rng.below(4)
+        if q in (0, 2):
+            c0 = anchor.c0 + rng.between(-(rw - 1), anchor.c1 - anchor.c0)
+            r0 = anchor.r0 - 1 - rh if q == 0 else anchor.r1 + 2
+        else:
+            r0 = anchor.r0 + rng.between(-(rh - 1), anchor.r1 - anchor.r0)
+            c0 = anchor.c0 - 1 - rw if q == 1 else anchor.c1 + 2
+        if not (2 <= c0 and c0 + rw - 1 <= w - 3 and 2 <= r0 and r0 + rh - 1 <= h - 3):
+            continue
+        room = Room(c0, r0, c0 + rw - 1, r0 + rh - 1)
+        if any(room.touches(o) for o in rooms):
+            continue
+        rooms.append(room)
+        placed += 1
     owner = [-1] * (w * h)
     for i, room in enumerate(rooms):
         if room.kind == 'maze':
@@ -394,6 +668,7 @@ def generate_layout(rng: Rng, w: int, h: int, area: int, start_cell) -> Layout:
         for c, r in room.cells:
             owner[r * w + c] = i
     lay = Layout(w, h, owner, rooms)
+    lay.wander = (area * 40503 + 7) & 0xFFFF
     if rooms[far].kind == 'maze':
         _carve_maze(lay, rng, rooms[far], far)
     if boss is not None:
@@ -417,10 +692,17 @@ def generate_layout(rng: Rng, w: int, h: int, area: int, start_cell) -> Layout:
                     best = (d, a, b)
         edges.append((best[1], best[2]))
         linked.append(best[2])
-    for _ in range(min(len(rooms) // 3, 4)):
-        a, b = rng.below(len(rooms)), rng.below(len(rooms))
-        if a != b and a != far and b != far and a != boss_index and b != boss_index and (a, b) not in edges and (b, a) not in edges:
-            edges.append((a, b))
+    # loops between near rooms (short corridors and extra doorways, as the shipped levels have)
+    for _ in range(len(rooms) * (LOOP_BASE + LOOP_PER * arch['loops']) // 100):
+        a, k = rng.below(len(rooms)), rng.below(LOOP_NEAREST)
+        if a in (far, boss_index):
+            continue
+        ac, ar = rooms[a].centre
+        near = sorted((abs(rooms[j].centre[0] - ac) + abs(rooms[j].centre[1] - ar)) * 1000 + j for j in range(len(rooms))
+                      if j not in (a, far, boss_index) and (a, j) not in edges and (j, a) not in edges)  # rooms it is not yet joined to
+        if k >= len(near):
+            continue
+        edges.append((a, near[k] % 1000))
     for a, b in edges:
         _carve_corridor(lay, rng, rooms[a], rooms[b])
     # the keyed room (the boss room, else the exit) keeps exactly one corridor doorway: the first one made;
@@ -466,9 +748,226 @@ def generate_layout(rng: Rng, w: int, h: int, area: int, start_cell) -> Layout:
     lay.exit_door = kept if kept else ()
     _secret_passages(lay, rng, depth)
     _closets(lay, rng, depth)
+    _boss_pen(lay, rng)
     _maze_gates(lay, rng, depth)
     _maze_bypass(lay)
+    _spurs(lay, rng, arch['spurs'])
+    if plain:  # the backrooms: no treasury, no wing gate
+        _segment_corridors(lay)
+        return lay
+    _treasury(lay, rng)
+    if block_doors:
+        _block_doors(lay, rng, depth)
+    _wing_gate(lay)
+    _segment_corridors(lay)
     return lay
+
+
+def _block_doors(lay: Layout, rng: Rng, depth: int) -> None:
+    """Doorways between an ordinary room with two doorways or more and a corridor, barricaded from
+    the room side; each only when everything the player could reach (secret doors shut) stays
+    reachable without it. Picked at random among the candidates, in door order."""
+    count = min(1 + depth // 2, MAX_BLOCKED)
+    start = lay.rooms[0].centre
+    secret_edges = {frozenset((s_in, s_out)) for s_in, s_out, _ in lay.secrets}
+    full = len(_reachable_shut(lay, start, secret_edges))
+    protected = set(secret_edges)
+    if lay.exit_door:
+        protected.add(frozenset(lay.exit_door))
+    if lay.gate:
+        protected.add(frozenset(lay.gate))
+    for a, b, _ in lay.closets:
+        protected.add(frozenset((a, b)))
+    cand = []
+    for a, b in lay.doors:
+        if frozenset((a, b)) in protected:
+            continue
+        oa, ob = lay.at(*a), lay.at(*b)
+        if oa == Layout.CORRIDOR and 0 <= ob < len(lay.rooms):
+            a, b, oa, ob = b, a, ob, oa
+        if not (0 <= oa < len(lay.rooms) and ob == Layout.CORRIDOR):
+            continue
+        room = lay.rooms[oa]
+        if room.kind != 'room':
+            continue
+        if sum(1 for d in lay.doors if room.contains(*d[0]) or room.contains(*d[1])) < 2:
+            continue
+        cand.append((a, b))
+    while cand and len(lay.blocked_doors) < count:
+        a, b = cand.pop(rng.below(len(cand)))
+        e = frozenset((a, b))
+        lay.blocked.add(e)
+        if len(_reachable_shut(lay, start, secret_edges)) != full:
+            lay.blocked.discard(e)
+        else:
+            lay.blocked_doors.append((a, b))
+
+
+def _treasury(lay: Layout, rng: Rng) -> None:
+    """The hidden puzzle (Hunter, 2026-10-22): a 2x2 room off an ordinary room, behind a
+    wall-looking secret door whose brick switch is on the host room's own wall. It touches nothing
+    but its host. A rare chest and the second healing salve lie inside."""
+    hosts = [room for room in lay.rooms if room.kind == 'room']
+    if not hosts:
+        return
+    for _ in range(80):
+        host = rng.pick(hosts)
+        c, r = rng.pick(host.cells)
+        q = rng.below(4)
+        dx, dz = SIDE[q]
+        oc, orr = c + dx, r + dz
+        if host.contains(oc, orr):
+            continue
+        c0 = oc if dx >= 0 else oc - 1
+        r0 = orr if dz >= 0 else orr - 1
+        if dx != 0:
+            r0 = orr - rng.below(2)
+        else:
+            c0 = oc - rng.below(2)
+        room = Room(c0, r0, c0 + 1, r0 + 1, 'treasury')
+        if not (2 <= c0 and c0 + 1 <= lay.w - 3 and 2 <= r0 and r0 + 1 <= lay.h - 3):
+            continue
+        if any(lay.built(cc, rr) for cc, rr in room.cells):
+            continue
+        if any(room.touches(o) for o in lay.rooms if o is not host):
+            continue
+        if any(lay.built(cc + ex, rr + ez) and not host.contains(cc + ex, rr + ez)
+               for cc, rr in room.cells for ex, ez in SIDE if not room.contains(cc + ex, rr + ez)):
+            continue
+        index = len(lay.rooms)
+        lay.rooms.append(room)
+        for cc, rr in room.cells:
+            lay.owner[rr * lay.w + cc] = index
+        lay.doors.append(((c, r), (oc, orr)))
+        lay.secrets.insert(0, ((c, r), (oc, orr), host))  # first, so it always gets a secret door record
+        lay.treasury = room
+        return
+
+
+def _wing_gate(lay: Layout) -> None:
+    """The main puzzle (Hunter, 2026-10-22): a portcullis on a doorway that every way to the boss
+    door passes through, cutting the area into the near side and the boss wing; its lever is on the
+    near side, in a dead end when there is one, else on a room wall, as far from the gate as it can
+    be. The wing must hold two ordinary rooms or more; the doorway nearest the boss door that
+    allows that is chosen. Secret doors count as open, so no passage goes round the gate."""
+    if not lay.exit_door:
+        return
+    start = lay.rooms[0].centre
+    target = lay.exit_door[1]
+    skip = [room for room in lay.rooms if room.kind in ('start', 'exit', 'maze', 'boss', 'closet', 'treasury', 'pen')]
+    secret_edges = {frozenset((s_in, s_out)) for s_in, s_out, _ in lay.secrets}
+    excluded = set(secret_edges)
+    excluded.add(frozenset(lay.exit_door))
+    if lay.gate:
+        excluded.add(frozenset(lay.gate))
+    parent = {start: None}
+    queue = [start]
+    head = 0
+    while head < len(queue):
+        c, r = queue[head]
+        head += 1
+        if (c, r) == target:
+            break
+        for q, (dx, dz) in enumerate(SIDE):
+            n = (c + dx, r + dz)
+            if n in parent or not lay.built(*n) or side_kind(lay, c, r, q) == WALL or frozenset(((c, r), n)) in lay.blocked:
+                continue
+            parent[n] = (c, r)
+            queue.append(n)
+    if target not in parent:
+        return
+    path = []
+    cell = target
+    while cell is not None:
+        path.append(cell)
+        cell = parent[cell]
+    path.reverse()
+    # candidates: a doorway, or the edge between two corridor cells (a corridor is one cell wide, so
+    # a portcullis on that edge closes it), walked back from the boss door; the first that cuts the
+    # area with a wing of two ordinary rooms or more wins, else one room or more
+    pairs = list(zip(path, path[1:]))
+    for need in (2, 1):
+        for a, b in reversed(pairs):
+            e = frozenset((a, b))
+            if e in excluded:
+                continue
+            if any(room.contains(*a) or room.contains(*b) for room in skip):
+                continue
+            if not (lay.is_door(a, b) or (lay.at(*a) == Layout.CORRIDOR and lay.at(*b) == Layout.CORRIDOR)):
+                continue
+            reach = _reachable_shut(lay, start, {e})
+            if target in reach:
+                continue
+            if sum(1 for room in lay.rooms if room.kind == 'room' and room.centre not in reach) < need:
+                continue
+            near = _reachable_shut(lay, start, {e} | secret_edges)
+            lever = _wing_lever(lay, near, b)
+            if lever is not None:
+                lay.wing = (a, b, lever[0], lever[1])
+                return
+
+
+def _wing_lever(lay: Layout, reach: set, gate):
+    def far(cell):
+        return abs(cell[0] - gate[0]) + abs(cell[1] - gate[1])
+    def walled(cell):
+        return any(side_kind(lay, cell[0], cell[1], q) == WALL for q in range(4))
+    best = None
+    for cell in lay.spur_ends:
+        if cell in reach and walled(cell) and (best is None or far(cell) > far(best)):
+            best = cell
+    if best is None:
+        for room in lay.rooms:
+            if room.kind != 'room' or room.centre not in reach:
+                continue
+            for cell in room.cells:
+                if any(side_kind(lay, cell[0], cell[1], q) == WALL for q in range(4)) and (best is None or far(cell) > far(best)):
+                    best = cell
+    if best is None:
+        return None
+    return best, next(q for q in range(4) if side_kind(lay, best[0], best[1], q) == WALL)
+
+
+def _room_cut(rng: Rng, room: Room) -> frozenset:
+    """An L room (one corner quadrant unbuilt, never the centre) or an octagon (the four corner
+    cells unbuilt), for rooms at least 4 cells a side. Two rng calls at most."""
+    rw, rh = room.c1 - room.c0 + 1, room.r1 - room.r0 + 1
+    if rng.below(2) == 0:
+        q = rng.below(4)
+        cw, ch = (rw - 1) // 2, (rh - 1) // 2
+        cols = range(room.c0, room.c0 + cw) if q in (0, 2) else range(room.c1 - cw + 1, room.c1 + 1)
+        rows = range(room.r0, room.r0 + ch) if q in (0, 1) else range(room.r1 - ch + 1, room.r1 + 1)
+        return frozenset((c, r) for r in rows for c in cols)
+    return frozenset([(room.c0, room.r0), (room.c1, room.r0), (room.c0, room.r1), (room.c1, room.r1)])
+
+
+def _spurs(lay: Layout, rng: Rng, count: int) -> None:
+    """Dead-end corridors: from a corridor cell, 2..4 cells straight into unbuilt ground that
+    touches no room (so they open no doorway). The last cell may get a chest."""
+    if not lay.corridor_cells:
+        return
+    for _ in range(count * 6):
+        if len(lay.spur_ends) >= count:
+            break
+        c, r = rng.pick(lay.corridor_cells)
+        q = rng.below(4)
+        length = rng.between(2, 4)
+        dx, dz = SIDE[q]
+        cells = []
+        for k in range(1, length + 1):
+            cc, rr = c + dx * k, r + dz * k
+            if not (1 <= cc < lay.w - 1 and 1 <= rr < lay.h - 1) or lay.at(cc, rr) != -1:
+                break
+            # clear of every room by a cell (a maze's cells are unowned, so the rects decide)
+            if any(rm.c0 - 1 <= cc <= rm.c1 + 1 and rm.r0 - 1 <= rr <= rm.r1 + 1 for rm in lay.rooms):
+                break
+            cells.append((cc, rr))
+        if len(cells) < 2:
+            continue
+        for cc, rr in cells:
+            lay.owner[rr * lay.w + cc] = Layout.CORRIDOR
+            lay.corridor_cells.append((cc, rr))
+        lay.spur_ends.append(cells[-1])
 
 
 def _maze_bypass(lay: Layout) -> None:
@@ -577,6 +1076,67 @@ def _closets(lay: Layout, rng: Rng, depth: int) -> None:
             break
 
 
+def _boss_pen(lay: Layout, rng: Rng) -> None:
+    """A 2x2 pen grown off a boss-room cell (PEN_CHANCE), touching no other room; one doorway."""
+    boss = lay.boss_room
+    if boss is None or not rng.chance(PEN_CHANCE):
+        return
+    edge = [(c, r, q) for (c, r) in boss.cells for q in range(4) if not boss.contains(c + SIDE[q][0], r + SIDE[q][1])]
+    for _attempt in range(30):
+        c, r, q = rng.pick(edge)
+        dx, dz = SIDE[q]
+        oc, orr = c + dx, r + dz
+        c0 = oc if dx >= 0 else oc - 1
+        r0 = orr if dz >= 0 else orr - 1
+        if dx != 0:
+            r0 = orr - rng.below(2)
+        else:
+            c0 = oc - rng.below(2)
+        room = Room(c0, r0, c0 + 1, r0 + 1, 'pen')
+        if not (2 <= c0 and c0 + 1 <= lay.w - 3 and 2 <= r0 and r0 + 1 <= lay.h - 3):
+            continue
+        if any(lay.built(x, y) for x, y in room.cells):
+            continue
+        if any(room.touches(o, 0) for o in lay.rooms if o is not boss) or any(room.touches(o) for o in lay.rooms if o is not boss and o.kind not in ('room', 'closet')):
+            continue
+        index = len(lay.rooms)
+        lay.rooms.append(room)
+        for x, y in room.cells:
+            lay.owner[y * lay.w + x] = index
+        lay.doors.append(((oc, orr), (c, r)))
+        lay.pen = ((oc, orr), (c, r), room)
+        return
+
+
+def _segment_corridors(lay: Layout) -> None:
+    """Corridor cells grouped into pieces of at most SEG_MAX (breadth-first from each unassigned cell, in
+    corridor order and side order); a doorway side between every two cells of different pieces."""
+    seg = {}
+    count = 0
+    for start in lay.corridor_cells:
+        if start in seg or lay.at(*start) != Layout.CORRIDOR:
+            continue
+        seg[start] = count
+        queue, i, n = [start], 0, 1
+        while i < len(queue) and n < SEG_MAX:
+            c, r = queue[i]
+            i += 1
+            for dx, dz in SIDE:
+                nb = (c + dx, r + dz)
+                if n < SEG_MAX and nb not in seg and lay.at(*nb) == Layout.CORRIDOR:
+                    seg[nb] = count
+                    queue.append(nb)
+                    n += 1
+        count += 1
+    for c, r in lay.corridor_cells:
+        if (c, r) not in seg:
+            continue
+        for q in (2, 3):  # south and east: each edge once
+            nb = (c + SIDE[q][0], r + SIDE[q][1])
+            if nb in seg and seg[nb] != seg[(c, r)] and not lay.is_door((c, r), nb):
+                lay.doors.append(((c, r), nb))
+
+
 def _maze_path(lay: Layout, m: Room) -> dict:
     """Parents of every carved maze cell from the entry (BFS over carved cells)."""
     parent = {m.entry: None}
@@ -665,6 +1225,8 @@ def solvable(lay: Layout) -> list[str]:
         gated.append(((closet_cell, corridor_cell), corridor_cell))
     for gate_cell, q, lever_cell, _ in lay.maze_gates:
         gated.append(((gate_cell, (gate_cell[0] + SIDE[q][0], gate_cell[1] + SIDE[q][1])), lever_cell))
+    if lay.wing:
+        gated.append(((lay.wing[0], lay.wing[1]), lay.wing[2]))
     shut = {frozenset(e) for e, _ in gated}
     opened = True
     reach = set()
@@ -692,7 +1254,8 @@ def _reachable_shut(lay: Layout, start, shut: set) -> set:
         c, r = queue.pop(0)
         for q, (dx, dz) in enumerate(SIDE):
             n = (c + dx, r + dz)
-            if n in seen or not lay.built(*n) or side_kind(lay, c, r, q) == WALL or frozenset(((c, r), n)) in shut:
+            e = frozenset(((c, r), n))
+            if n in seen or not lay.built(*n) or side_kind(lay, c, r, q) == WALL or e in shut or e in lay.blocked:
                 continue
             seen.add(n)
             queue.append(n)
@@ -723,8 +1286,8 @@ def side_kind(lay: Layout, c: int, r: int, q: int) -> int:
     me, other = lay.at(c, r), lay.at(c + dx, r + dz)
     if other < 0:
         return WALL
-    if me == other:
-        return 0
+    if me == other:  # open, except where a corridor is cut into sectors (_segment_corridors)
+        return DOOR if me == Layout.CORRIDOR and lay.is_door((c, r), (c + dx, r + dz)) else 0
     return DOOR if lay.is_door((c, r), (c + dx, r + dz)) else WALL
 
 
@@ -748,8 +1311,17 @@ def corner_kind(lay: Layout, c: int, r: int, q: int, sides: list[int]) -> int:
 
 
 def encode_cell(lay: Layout, c: int, r: int) -> tuple[int, int, int]:
+    if r == 0 or r == lay.h - 1 or c == 0 or c == lay.w - 1:  # the border ring, as the shipped grids
+        word = (BORDER_TOP if r == 0 else 0) | (BORDER_BOTTOM if r == lay.h - 1 else 0) | (BORDER_LEFT if c == 0 else 0) | (BORDER_RIGHT if c == lay.w - 1 else 0)
+        return word, 0, 0
     if not lay.built(c, r):
-        return ROCK, 0, 0
+        # rock only beside built cells, as the shipped levels do (level 1: 329 rock cells, the
+        # rest of the unbuilt grid empty); an area full of rock cost frames (Hunter, 7 FPS)
+        for dx in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if (dx or dz) and lay.built(c + dx, r + dz):
+                    return ROCK, 0, 0
+        return 0, 0, 0
     sides = [side_kind(lay, c, r, q) for q in range(4)]
     word = BUILT
     for q in range(4):
@@ -783,8 +1355,10 @@ def decode_check(layers: list[list[int]], lay: Layout) -> list[str]:
     for r in range(h):
         for c in range(w):
             a = cell(c, r)
+            if r == 0 or r == h - 1 or c == 0 or c == w - 1:
+                continue  # the border ring
             if not a & BUILT:
-                if a != ROCK:
+                if a not in (ROCK, 0):
                     problems.append(f'unbuilt cell {c},{r} is {a:x}')
                 continue
             for q in range(4):
@@ -810,7 +1384,7 @@ def decode_check(layers: list[list[int]], lay: Layout) -> list[str]:
     boss = lay.boss_room
     if boss is not None:
         boss_doors = [d for d in lay.doors if boss.contains(*d[0]) or boss.contains(*d[1])]
-        if len(boss_doors) != 2 or not lay.gate:
+        if len(boss_doors) != 2 + (1 if lay.pen else 0) or not lay.gate:
             problems.append(f'boss room has {len(boss_doors)} doorways')
     reach = _reachable(lay, lay.rooms[0].centre)
     for room in lay.rooms:
@@ -1050,10 +1624,16 @@ class Template:
     talk_zone_ids: list = field(default_factory=list)  # per spot, one per companion (spot-major)
     pair_zone_ids: list = field(default_factory=list)  # per pair spot, one per companion pair (spot-major)
     proctor_boss_id: int = 0  # the dead proctor Aldric recognises: the boss of the first area of depth 3 (0: none)
+    sir_demon_id: int = 0  # the Archives' demon that roams the backrooms (0: none)
     reveal: list = field(default_factory=list)  # [(companion record id, [power ids])] granted at that companion's trust reveal
     bypass_gate_id: int = 0  # the companion bypass portcullis and its lever (0: no bypass)
     bypass_lever_id: int = 0
+    wall_zone_id: int = 0  # the backrooms trigger in the perfect copy's corner (0: none)
     companion_roles: list = field(default_factory=list)  # each companion's main role id (the dialogue's ActivateTopicN needs it)
+    salve_id: int = 0  # the Healing Salve item record (imported from exanima03; 0: none)
+    prop_names: list = field(default_factory=list)  # the names behind `props`, in order
+    prop_stages: dict = field(default_factory=dict)  # prop name -> stages (1-based) whose vanilla levels place it
+    dress: dict = field(default_factory=dict)  # stage -> per class, dressings (load_dress)
     spot_order: dict = field(default_factory=dict)  # talk spot -> companion indices in speaking order (one voice per occasion)
 
 
@@ -1115,9 +1695,14 @@ def load_template(data: bytes, ini: str) -> Template:
     tp.talk_zone_ids = ints('talk_zones')
     tp.pair_zone_ids = ints('pair_zones')
     tp.proctor_boss_id = int(keys.get('proctor_boss', 0))
+    tp.sir_demon_id = int(keys.get('sir_demon', 0))
     tp.reveal = [(int(e.split(':')[0]), [int(x) for x in e.split(':')[1].split(',') if x]) for e in keys.get('reveal_powers', '').split(';') if e]
     tp.bypass_gate_id, tp.bypass_lever_id = int(keys.get('bypass_gate', 0)), int(keys.get('bypass_lever', 0))
+    tp.wall_zone_id = int(keys.get('wall_zone', 0))
     tp.companion_roles = ints('companion_roles') if keys.get('companion_roles') else []
+    tp.salve_id = int(keys.get('salve', 0))
+    tp.prop_names = list(prop_names)
+    tp.prop_stages = {e.split(':')[0]: {int(x) for x in e.split(':')[1].split(',') if x} for e in keys.get('prop_stages', '').split(';') if e}
     tp.spot_order = {e.split(':')[0]: [int(x) for x in e.split(':')[1].split(',') if x] for e in keys.get('spot_order', '').split(';') if e}
     tp.boss_bands = [[ints(f'bosses_t{i}_b{k}') for k in range(1, BANDS + 1)] for i in range(1, 7) if f'bosses_t{i}_b1' in keys]
     tp.enemy_bands = [[ints(f'enemies_t{i}_b{k}') for k in range(1, BANDS + 1)] for i in range(1, 7) if f'enemies_t{i}_b1' in keys]
@@ -1189,11 +1774,12 @@ def _spawn(who: int, pos, yaw_radians: float) -> bytes:
     return _chunk(TAG_SPAWN, struct.pack('<I3ffII', who, pos[0], pos[1], pos[2], yaw_radians, 0, 0))
 
 
-def _patch_script(item_db: bytes, area: int, seed: int) -> bytes:
+def _patch_script(item_db: bytes, area: int, seed: int, event: bytes = b'EndlessNext') -> bytes:
     i = item_db.find(SCRIPT_PREFIX)
     if i < 0:
         raise ValueError('template has no EndlessNext script')
-    text = b'LuaEvent(EndlessNext,%010u_%010u);' % (area, seed & 0xFFFFFFFF)
+    assert len(event) == 11  # the script keeps its width
+    text = b'LuaEvent(%s,%010u_%010u);' % (event, area, seed & 0xFFFFFFFF)
     end = item_db.index(b';', i) + 1
     if end - i != len(text):
         raise ValueError('script width changed')
@@ -1237,20 +1823,20 @@ def build_terrain(tp: Template, lay: Layout, w: int, h: int) -> bytes:
 
 
 def enemy_count(area: int) -> int:
-    """Endless and steady: +3 per depth and +2 per area inside a depth, no cap (the number of
-    spawn cells is the only limit; a frame-rate guard belongs to the player's settings)."""
+    """+3 per depth and +2 per area inside a depth, capped at ENEMY_CAP (reached at depth 11):
+    past that the strength bands carry the curve, not the count."""
     depth = depth_of(area)
-    return 4 + 3 * depth + 2 * ((area - 1) % AREAS_PER_DEPTH)
+    return min(4 + 3 * depth + 2 * ((area - 1) % AREAS_PER_DEPTH), ENEMY_CAP)
 
 
 def boss_minion_count(area: int) -> int:
-    """The boss room fills steadily too: one minion per depth from depth 2."""
-    return max(depth_of(area) - 1, 0)
+    """The boss room fills steadily too: one minion per depth from depth 2, up to MINION_CAP."""
+    return min(max(depth_of(area) - 1, 0), MINION_CAP)
 
 
 def boss_count(area: int) -> int:
-    """A second boss from depth 6, a third from depth 12, and so on."""
-    return 1 + depth_of(area) // 6
+    """A second boss from depth 6, a third from depth 12; no more than BOSS_CAP."""
+    return min(1 + depth_of(area) // 6, BOSS_CAP)
 
 
 BANDS = 3  # strength bands beyond the shipped records (make_template.py writes them)
@@ -1348,12 +1934,590 @@ def talk_zone_ids(tp: Template, spot: str, per_spot: int, present) -> list[int]:
     return [tp.talk_zone_ids[spot_index * per_spot + k]]
 
 
-def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48, present=None) -> tuple[bytes, Layout]:
+def assign_purposes(rng: Rng, lay: Layout, depth: int) -> None:
+    """Every ordinary room gets a purpose: one quiet room per area from depth 2, stores,
+    barracks, shrines (from depth 3), the rest plain. One rng call per ordinary room."""
+    quiet_done = False
+    for room in lay.rooms:
+        if room.kind != 'room':
+            continue
+        roll = rng.between(0, 99)
+        if depth >= 2 and not quiet_done and roll < 25:
+            room.purpose = 'quiet'
+            quiet_done = True
+        elif roll < 34:
+            room.purpose = 'store'
+        elif roll < 48:
+            room.purpose = 'barracks'
+        elif roll < 60:
+            room.purpose = 'kitchen'
+        elif roll < 68:
+            room.purpose = 'latrine'
+        elif roll < 77:
+            room.purpose = 'workshop'
+        elif depth >= 3 and roll < 85:
+            room.purpose = 'shrine'
+        elif depth >= 2 and roll < 90:
+            room.purpose = 'gaol'
+        elif depth >= 4 and roll < 94:
+            room.purpose = 'surgery'
+        else:
+            room.purpose = 'plain'
+
+
+def rot_mask(m: int, k: int) -> int:
+    """A wall mask turned k quarter steps (side q becomes side q + k)."""
+    return ((m << k) | (m >> (4 - k))) & 15 if k else m
+
+
+def rot_step(dx: float, dz: float, mtx: list):
+    """One quarter step: an offset and the rows of a matrix, (x, y, z) -> (z, y, -x), which takes
+    north (0, -1) to west (-1, 0), the side order and SIDE_YAW's direction."""
+    return dz, -dx, [v for i in range(3) for v in (mtx[3 * i + 2], mtx[3 * i + 1], -mtx[3 * i])]
+
+
+def _dress_objs(blob: bytes, p: int):
+    (no,) = struct.unpack_from('<I', blob, p); p += 4
+    objs = []
+    for _ in range(no):
+        dx, dy, dz, n = struct.unpack_from('<3fI', blob, p); p += 16
+        objs.append((dx, dy, dz, blob[p:p + n])); p += n
+    return objs, p
+
+
+def dress_name(raw: bytes) -> str:
+    return raw[12:28].split(b'\0')[0].decode('latin-1')
+
+
+def load_dress(tp: Template, blob: bytes) -> None:
+    """assets/endless-dress.bin (make_template.py, EDR2), per stage: the cell pools by wall class
+    [objs], the whole rooms [(tag, [(class, objs)])], rooms by tag {tag: [room index]}, and the
+    knocked-over seat poses {model: [(matrix, height)]}; offsets canonical."""
+    tp.dress = {}
+    tp.shapes = {}
+    if not blob or blob[:4] not in (b'EDR4', b'EDR5'):
+        return
+    with_shapes = blob[:4] == b'EDR5'
+    p = 4
+    (nst,) = struct.unpack_from('<I', blob, p); p += 4
+    for stage in range(1, nst + 1):
+        (ncls,) = struct.unpack_from('<I', blob, p); p += 4
+        classes = []
+        for _ in range(ncls):
+            (nd,) = struct.unpack_from('<I', blob, p); p += 4
+            lst = []
+            for _ in range(nd):
+                objs, p = _dress_objs(blob, p)
+                lst.append(objs)
+            classes.append(lst)
+        (nrooms,) = struct.unpack_from('<I', blob, p); p += 4
+        rooms, by_tag = [], {}
+        for ri in range(nrooms):
+            tag, rw, rh, ncells = struct.unpack_from('<IIII', blob, p); p += 16
+            cells = []
+            for _ in range(ncells):
+                cls, ck = struct.unpack_from('<II', blob, p); p += 8
+                objs, p = _dress_objs(blob, p)
+                (nit,) = struct.unpack_from('<I', blob, p); p += 4
+                items = []
+                for _ in range(nit):
+                    items.append(struct.unpack_from('<I4f', blob, p)); p += 20
+                cells.append((cls, objs, items, ck))
+            rooms.append((tag, cells, rw, rh))
+            by_tag.setdefault(tag, []).append(ri)
+        (ntip,) = struct.unpack_from('<I', blob, p); p += 4
+        tipped = {}
+        for _ in range(ntip):
+            name = blob[p:p + 16].split(b'\0')[0].decode('latin-1'); p += 16
+            mtx = struct.unpack_from('<9f', blob, p); p += 36
+            (dy,) = struct.unpack_from('<f', blob, p); p += 4
+            tipped.setdefault(name, []).append((mtx, dy))
+        tp.dress[stage] = (classes, rooms, by_tag, tipped)
+        shapes = []
+        if with_shapes:
+            (nsh,) = struct.unpack_from('<I', blob, p); p += 4
+            for _ in range(nsh):
+                sw, sh, n = blob[p], blob[p + 1], blob[p + 2]; p += 3
+                shapes.append((sw, sh, tuple((blob[p + 2 * k], blob[p + 2 * k + 1]) for k in range(n)))); p += 2 * n
+        tp.shapes[stage] = shapes
+
+
+# walkways (2026-10-22, "keep a walkway between doors"): in an ordinary room the cells on the shortest
+# ways from its first doorway to each other doorway (to its middle when it has one) stay walkable: a
+# dressing object there is left out unless it sits toward the cell's edge, by a wall
+WALK_CLEAR = 0.3 * CELL
+# furniture groups (2026-10-22, "place groups, not cells"): before the cell-by-cell dressing, a 2x2 patch
+# of an ordinary room takes, this percent of the time, a whole 2x2 block of its source room whose cells
+# have the same walls in the same turns, so a table, its chairs and what is on it go down together
+GROUP_CHANCE = 50
+# wall dressing by purpose (2026-10-22): an ordinary room's walled cells the dressing left bare take, this
+# percent of the time, one wall-hung piece (above HUNG_Y) from a cell of the same wall class in the
+# stone's rooms of the room's own purpose, so a kitchen gets a kitchen's shelves, a gaol its chains;
+# the cell's turn puts it on the right wall, facing out
+WALL_DRESS_CHANCE, HUNG_Y = 45, 80.0
+# a wall-hung piece (above HUNG_Y) within HUNG_NEAR of a doorway side of its cell, with no wall side as
+# near, is left out (a copied room's wall where this room has a doorway); pieces in the open (on a post,
+# a stack, a shelf top) stay, as the shipped levels have them
+HUNG_NEAR = 0.3 * CELL
+# floor decals by use (2026-10-22): the stone's own floor decals (models named decal*), each with its own
+# flat pose turned at random: on a walkway cell this percent of the time (worn floor between doors), and
+# DECAL_FIGHT more in a room whose event was a fight, DECAL_KITCHEN in a kitchen
+WALK_DECAL_CHANCE, DECAL_FIGHT, DECAL_KITCHEN = 35, 2, 1
+# corridor clutter (2026-10-22): at a bend or a junction, this percent of the time one or two pieces of the
+# stone's own debris; in a corridor cell with a doorway side, this percent of the time a wall-hung piece
+# for that cell's walls (any purpose)
+CORRIDOR_CLUTTER, DOORWAY_DRESS = 50, 50
+# stories across rooms (2026-10-22): a room behind a barricade is a fight (the barricade was held); a fight
+# leaves a trail of floor marks TRAIL_LEN cells down the corridor from its first doorway (each mark this
+# percent of the time); a store beside a kitchen is dressed in every cell (stacked high)
+TRAIL_LEN, TRAIL_CHANCE = 4, 75
+# one showpiece per area (2026-10-22): an ordinary room of a purpose in SHOW_TAGS (shrine, surgery,
+# workshop, kitchen: the first that has a match) whose size equals a whole vanilla room of that purpose on
+# this stone is dressed as that room exactly, cell for cell, as the perfect copy is (without its chair)
+SHOW_TAGS = (6, 8, 5, 3, 2, 1, 7, 4)  # then barracks, store, gaol, latrine when none of those has a match
+# the boss pen (Hunter, 2026-10-22: "a portcullis trap + lever to some boss rooms in order to lure them to,
+# and throw them into, the pit"): this percent of boss rooms get a 2x2 pen off one side, its portcullis
+# raised (the mod opens it on arrival) and its lever on the boss room's wall beside the doorway; drop it
+# with the boss inside and the boss counts as beaten (the mod opens the exit gate)
+PEN_CHANCE = 40
+# one event per room (2026-10-22, "give each room one event"): out of 100, below FIGHT a fight (every seat
+# that can fall is knocked over, the stone's own debris scattered), below LOOTED looted (half the
+# dressing, no groups, one seat over), below HURRY left in a hurry (seats shoved far round, one over),
+# else left tidy (seats near square, none over). Remains stay the easter eggs' own.
+EVENT_FIGHT, EVENT_LOOTED, EVENT_HURRY = 15, 30, 50
+TIDY_JITTER, HURRY_JITTER = 8.0, 60.0
+FIGHT_DEBRIS = 3
+
+
+def walkway(lay: Layout, room: Room) -> set:
+    cells = set(room.cells)
+    doors = []
+    for a, b in lay.doors:
+        for x in (a, b):
+            if x in cells and x not in doors:
+                doors.append(x)
+    if not doors:
+        return set()
+    targets = doors[1:] if len(doors) > 1 else [room.centre if room.centre in cells else doors[0]]
+    parent = {doors[0]: None}
+    queue = [doors[0]]
+    i = 0
+    while i < len(queue):
+        c, r = queue[i]
+        i += 1
+        for dx, dz in SIDE:
+            n = (c + dx, r + dz)
+            if n in cells and n not in parent:
+                parent[n] = (c, r)
+                queue.append(n)
+    out = set()
+    for x in targets:
+        if x not in parent:
+            continue
+        while x is not None:
+            out.add(x)
+            x = parent[x]
+    return out
+
+
+def turn_rows(mtx: list, degrees: float) -> list:
+    """A matrix turned about the world's vertical axis (rows times the yaw matrix, as
+    level.Placed.turn_by), keeping any tilt."""
+    a = math.radians(degrees)
+    c, s_ = math.cos(a), math.sin(a)
+    return [v for i in range(3) for v in (mtx[3 * i] * c - mtx[3 * i + 2] * s_, mtx[3 * i + 1], mtx[3 * i] * s_ + mtx[3 * i + 2] * c)]
+
+
+def themed(tp: Template, name: str, stage: int) -> bool:
+    """Whether vanilla places this prop on a level that wears this stage's stone (no table or no
+    stage: yes; a prop no listed level places: nowhere)."""
+    if stage == 0 or name not in tp.prop_stages:
+        return True
+    return stage in tp.prop_stages[name]
+
+
+def choose_sources(rng: Rng, lay: Layout, dress) -> None:
+    """Each ordinary room's source room for its purpose (any of the stage's when the stone has none
+    for it); the purpose then follows what the source holds (the quiet room keeps its own)."""
+    if not dress:
+        return
+    _classes, d_rooms, d_by_tag, _tipped = dress
+    if not d_rooms:
+        return
+    for room in lay.rooms:
+        if room.kind != 'room':
+            continue
+        tag = PURPOSE_TAG.get(room.purpose)
+        pool = d_by_tag.get(tag, []) if tag is not None else []
+        if not pool:
+            pool = list(range(len(d_rooms)))
+        # by scale: a small room takes a small source room, a big one a big one, where the stone has them
+        size = len(room.cells)
+        near = [ri for ri in pool if len(d_rooms[ri][1]) * SIZE_FACTOR >= size and len(d_rooms[ri][1]) <= size * SIZE_FACTOR]
+        if not near:
+            best = min(abs(len(d_rooms[ri][1]) - size) for ri in pool)
+            near = [ri for ri in pool if abs(len(d_rooms[ri][1]) - size) == best]
+        room.src = rng.pick(near)
+        if room.purpose != 'quiet' and d_rooms[room.src][0] in TAG_PURPOSE:
+            room.purpose = TAG_PURPOSE[d_rooms[room.src][0]]
+
+
+def pick_showpiece(rng: Rng, lay: Layout, dress) -> None:
+    if not dress:
+        return
+    d_rooms = dress[1]
+    for tag in SHOW_TAGS:
+        purpose = TAG_PURPOSE.get(tag)
+        pairs = []
+        for i, room in enumerate(lay.rooms):
+            if room.kind != 'room' or room.copy or room.cut or room.purpose != purpose:
+                continue
+            rw, rh = room.c1 - room.c0 + 1, room.r1 - room.r0 + 1
+            for ri, dr in enumerate(d_rooms):
+                if dr[0] == tag and dr[2] == rw and dr[3] == rh and len(dr[1]) == rw * rh:
+                    pairs.append((i, ri))
+        if pairs:
+            i, ri = rng.pick(pairs)
+            lay.rooms[i].src, lay.rooms[i].show = ri, True
+            return
+
+
+def pick_copy(rng: Rng, lay: Layout, dress, stage_no: int) -> None:
+    """Easter egg 4: now and then, on the catacombs' stone, one ordinary room of a source room's exact
+    size (same orientation, every cell kept) becomes that room exactly."""
+    if not dress or stage_no != 1 or not rng.chance(COPY_CHANCE):
+        return
+    d_rooms = dress[1]
+    pairs = []
+    for i, room in enumerate(lay.rooms):
+        if room.kind != 'room' or room.purpose == 'quiet' or room.cut:
+            continue
+        rw, rh = room.c1 - room.c0 + 1, room.r1 - room.r0 + 1
+        for ri, dr in enumerate(d_rooms):
+            if dr[2] == rw and dr[3] == rh and len(dr[1]) == rw * rh:
+                pairs.append((i, ri))
+    if not pairs:
+        return
+    i, ri = rng.pick(pairs)
+    room = lay.rooms[i]
+    room.src, room.copy = ri, True
+    if d_rooms[ri][0] in TAG_PURPOSE:
+        room.purpose = TAG_PURPOSE[d_rooms[ri][0]]
+
+
+def arrange_neighbours(lay: Layout) -> None:
+    """Swaps purposes (with their source rooms) between ordinary rooms until the neighbour and
+    size rules hold where they can: for each room breaking a rule, in order, the first swap with
+    another room (not the quiet room) that lowers the broken rules around both. No randomness."""
+    rooms = [room for room in lay.rooms if room.kind == 'room']
+    n = len(rooms)
+    if n < 2:
+        return
+    nb = [[] for _ in range(n)]
+    for i in range(n):
+        a = rooms[i]
+        for j in range(i + 1, n):
+            b = rooms[j]
+            gap = max(b.c0 - a.c1 - 1, a.c0 - b.c1 - 1, b.r0 - a.r1 - 1, a.r0 - b.r1 - 1)
+            if gap <= NEIGHBOUR_GAP:
+                nb[i].append(j)
+                nb[j].append(i)
+    sizes = [len(room.cells) for room in rooms]
+
+    def broken(i):
+        p = rooms[i].purpose
+        bad = 0
+        near = [rooms[j].purpose for j in nb[i]]
+        if p == 'kitchen' and any(room.purpose == 'store' for room in rooms) and not any(q in ('store', 'kitchen') for q in near):
+            bad += 1
+        if p in ('gaol', 'latrine') and 'kitchen' in near:
+            bad += 1
+        if p == 'kitchen' and any(q in ('gaol', 'latrine') for q in near):
+            bad += 1
+        if p == 'shrine' and any(q in SHRINE_APART for q in near):
+            bad += 1
+        if p in SHRINE_APART and 'shrine' in near:
+            bad += 1
+        if p in SMALL_PURPOSES and sizes[i] > SMALL_MAX:
+            bad += 1
+        if p in BIG_PURPOSES and sizes[i] < BIG_MIN:
+            bad += 1
+        return bad
+
+    def around(i, j):
+        return sorted({i, j} | set(nb[i]) | set(nb[j]))
+
+    def swap(i, j):
+        a, b = rooms[i], rooms[j]
+        a.purpose, b.purpose = b.purpose, a.purpose
+        a.src, b.src = b.src, a.src
+
+    for _ in range(NEIGHBOUR_PASSES):
+        changed = False
+        for i in range(n):
+            if rooms[i].purpose == 'quiet' or broken(i) == 0:
+                continue
+            for j in range(n):
+                if j == i or rooms[j].purpose == 'quiet' or rooms[j].purpose == rooms[i].purpose:
+                    continue
+                zone = around(i, j)
+                before = sum(broken(k) for k in zone)
+                swap(i, j)
+                if sum(broken(k) for k in zone) < before:
+                    changed = True
+                    break
+                swap(i, j)
+        if not changed:
+            break
+
+
+def props_for(tp: Template, purpose: str, stage: int) -> list:
+    """The (name, chunk) props a room of this purpose may hold on this stage, in template order
+    (empty when vanilla pairs none of them with the stone)."""
+    wanted = PURPOSE_PROPS.get(purpose, PROP_NAMES)
+    return [pr for pr in tp.props if pr[0] in wanted and themed(tp, pr[0], stage)]
+
+
+def rare_chests(tp: Template) -> list:
+    """The deepest chest tier the template carries: the rare finds of shrine rooms."""
+    for tier in reversed(tp.chest_tiers):
+        if tier:
+            return tier
+    return list(tp.chest_ids)
+
+
+def companion_for(tp: Template, area: int, met) -> int:
+    """The companion record found on this area, or 0: the second area of each depth holds the
+    depth's companion in the found order; one already met (`met`: companion indices, None =
+    nobody) is skipped for the first not yet met, and after all three nothing is found."""
+    if not tp.companion_ids or (area - 1) % AREAS_PER_DEPTH != 1:
+        return 0
+    which = (depth_of(area) - 1) % len(tp.companion_ids)
+    if met is not None and which in met:
+        which = next((i for i in range(len(tp.companion_ids)) if i not in met), -1)
+    if which < 0:
+        return 0
+    if met is None and depth_of(area) > len(tp.companion_ids):
+        return 0
+    return tp.companion_ids[which]
+
+
+def stage_index(tp: Template, area: int) -> int:
+    """The 1-based tile-set stage of an area (0 without stages), as gen.lua's stage_index."""
+    if not tp.stages:
+        return 0
+    depth = depth_of(area)
+    i = 0 if depth <= 2 else depth - 2
+    if i >= len(tp.stages):
+        i = 1 + (i - 1) % (len(tp.stages) - 1) if len(tp.stages) > 1 else 0
+    return i + 1
+
+
+def pick_archetype(rng: Rng, depth: int) -> str:
+    return 'warren' if depth < 2 else ARCH_ORDER[rng.below(len(ARCH_ORDER))]
+
+
+def pick_mutator(rng: Rng, depth: int) -> str:
+    if depth < 3 or not rng.chance(30):
+        return 'none'
+    return MUTATORS[rng.below(len(MUTATORS))]
+
+
+def _proto(d_rooms, name: str):
+    """The first upright vanilla object of this model in the stage's rooms: (dy, raw), or None."""
+    for _tag, cells, _rw, _rh in d_rooms:
+        for _cl, objs, _it, _k in cells:
+            for _dx, dy, _dz, raw in objs:
+                if dress_name(raw) == name and abs(struct.unpack_from('<f', raw, 8 + 20 + 16)[0]) >= 0.7:
+                    return dy, raw
+    return None
+
+
+def _put(raw: bytes, pos, mtx) -> bytes:
+    b = bytearray(raw)
+    struct.pack_into('<9f', b, 8 + 20, *mtx)
+    struct.pack_into('<3f', b, 8 + 56, *pos)
+    return bytes(b)
+
+
+def backrooms_lair(lay: Layout):
+    """Where Sir waits in the backrooms: the ordinary room whose distance from the start is nearest half
+    the farthest one's (first on ties), so it is met on the way, not at the door; never the key's room."""
+    sc, sr = lay.rooms[0].centre
+    rooms = [room for room in lay.rooms if room.kind == 'room' and not room.contains(*lay.key_cell)]
+    if not rooms:
+        return None
+    far = max(abs(room.centre[0] - sc) + abs(room.centre[1] - sr) for room in rooms)
+    best = None
+    for room in rooms:
+        d = abs(abs(room.centre[0] - sc) + abs(room.centre[1] - sr) - far / 2)
+        if best is None or d < best[0]:
+            best = (d, room)
+    return best[1]
+
+
+def backrooms_props(tp: Template, lay: Layout, w: int, h: int, seed: int, area: int, stage_no: int, lair=None) -> list[bytes]:
+    """The backrooms' furniture (see BACK_ROWS): its own rng, so the plan, lights and key stay as they
+    were; never in a cell with a doorway or the key's cell, so the way through stays open."""
+    dress = tp.dress.get(stage_no) if tp.dress else None
+    if not dress:
+        return []
+    proto = {}
+    for name in BACK_PROPS:
+        got = _proto(dress[1], name)
+        if got is not None:
+            proto[name] = got
+    rng = Rng(seed ^ 0xBAC5, area)
+    out = []
+    fy = tp.floor_y
+
+    def quiet(c, r):
+        return (c, r) != tuple(lay.key_cell) and all(side_kind(lay, c, r, q) != DOOR for q in range(4))
+
+    def add(name, c, r, fx, fz, mtx, lift=0.0):
+        if name in proto:
+            x, z = world(c, r, w, h, fx, fz)
+            dy, raw = proto[name]
+            out.append(_put(raw, (x, fy + dy + lift, z), mtx))
+
+    rooms = [room for room in lay.rooms if room.kind == 'room']
+    biggest = None
+    for room in rooms:
+        if biggest is None or len(room.cells) > len(biggest.cells):
+            biggest = room
+    for room in rooms:
+        cc, cr = room.centre
+        if room is lair:  # Sir's room stays bare
+            continue
+        if room is biggest:
+            # a table set for one: the table in the middle, one chair drawn up to its south end
+            if quiet(cc, cr):
+                add('table_m_re a', cc, cr, 0.5, 0.5, yaw_matrix(0.0))
+                add('chair a', cc, cr, 0.5, 0.5 + 125.0 / CELL, yaw_matrix(180.0))
+            continue
+        roll = rng.below(100)
+        north = rng.below(2) == 0
+        q = 0 if north else 2
+        row = room.r0 if north else room.r1
+        if roll < BACK_ROWS:
+            # two rows of chairs along the wall, every one facing it, every one alike
+            for c in range(room.c0, room.c1 + 1):
+                if room.contains(c, row) and quiet(c, row) and side_kind(lay, c, row, q) == WALL:
+                    for fz in ((0.22, 0.48) if north else (0.78, 0.52)):
+                        for fx in (0.25, 0.5, 0.75):
+                            add('chair a', c, row, fx, fz, yaw_matrix(180.0 if north else 0.0))
+        elif roll < BACK_BEDS:
+            # beds stood on end against the wall, one to a cell
+            for c in range(room.c0, room.c1 + 1):
+                if room.contains(c, row) and quiet(c, row) and side_kind(lay, c, row, q) == WALL:
+                    add('bed b01', c, row, 0.5, 0.2 if north else 0.8, BED_ON_END, BED_HALF)
+        elif roll < BACK_CENTRE:
+            # one thing, square to the walls, at the room's exact middle
+            name = rng.pick(BACK_CENTRE_PROPS)
+            add(name, room.c0, room.r0, (room.c1 - room.c0 + 1) / 2, (room.r1 - room.r0 + 1) / 2, yaw_matrix(0.0))
+        elif roll < BACK_TWIN:
+            # the same chair and bucket in the same spot of every room that has them
+            c, r = room.c0 + 1, room.r0 + 1
+            if room.contains(c, r) and quiet(c, r):
+                add('chair a', c, r, 0.3, 0.3, yaw_matrix(0.0))
+                add('bucket wod a01', c, r, 0.7, 0.3, yaw_matrix(0.0))
+    return out
+
+
+def build_backrooms(tp: Template, seed: int, area: int) -> tuple[bytes, Layout]:
+    """The backrooms for (seed, area): a vast plain level of the area's own stone, the backrooms plan,
+    every lamp alike and dull, no props, no one in it; the key to the way back in the room farthest
+    from it, and the exit zone's script raising EndlessBack (the mod returns you to the copy)."""
+    w = h = BACK_GRID
+    rng = Rng(seed ^ 0xBAC4, area)
+    stage = stage_of(tp, area)
+    start_cell = (int(START_X // CELL) + w // 2, int(START_Z // CELL) + h // 2)
+    lay = generate_layout(rng, w, h, 1, start_cell, 'backrooms', False, True)
+    for room in lay.rooms:
+        room.style = 0
+    layers = encode_grid(lay)
+    names = _names_block(stage[0]) + _names_block(stage[1]) if stage else tp.grid_names
+    grid = names + struct.pack('<IIII', w, h, 0, 600) + b''.join(struct.pack(f'<{w * h}I', *L) for L in layers)
+    nodes = []
+    for room in lay.rooms:
+        if room.kind == 'maze':
+            continue
+        x, z = world(*room.centre, w, h)
+        span = max(room.c1 - room.c0, room.r1 - room.r0)
+        nodes.append(_light(tp, (x, LIGHT_Y, z), BACK_LIGHT, BACK_STRENGTH, 2.0, float(600 + 150 * span)))
+    for k, (c, r) in enumerate(lay.corridor_cells):
+        if k % 6 == 1:
+            x, z = world(c, r, w, h)
+            nodes.append(_light(tp, (x, LIGHT_Y, z), BACK_LIGHT, BACK_STRENGTH, 2.0, 600.0))
+    node_chunk = struct.pack('<I', len(nodes)) + b''.join(nodes)
+    exit_room = lay.exit_room
+    gx, gz = world(*exit_room.centre, w, h)
+    start = lay.rooms[0]
+    sx, sz = world(*start.centre, w, h)
+    places = [
+        _placement(tp.marker_place, 0x80000000 | tp.arrival_id, (sx, 100.0, sz), 0.0),
+        _placement(tp.marker_place, 0x80000000 | tp.zone_id, (gx, 100.0, gz), 0.0),
+    ]
+    pair = (area - 1) % len(tp.key_ids)
+    inside, outside = lay.exit_door
+    q = SIDE.index((outside[0] - inside[0], outside[1] - inside[1]))
+    dx, dz = world(*inside, w, h)
+    places.append(_placement(tp.door_place, 0x80000000 | tp.door_ids[pair], (dx, tp.floor_y, dz), SIDE_YAW[q], 1))
+    rooms = [room for room in lay.rooms if room.kind == 'room'] or [start]
+    key_room = max(rooms, key=lambda room: abs(room.centre[0] - inside[0]) + abs(room.centre[1] - inside[1]))
+    kc, kr = rng.pick(key_room.cells)
+    kx, kz = world(kc, kr, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
+    places.append(_placement(tp.key_place, 0x80000000 | tp.key_ids[pair], (kx, tp.floor_y, kz), rng.unit() * 360.0))
+    lay.key_cell = (kc, kr)
+    item_chunk = _patch_script(tp.item_db, area, seed, b'EndlessBack') + tp.item_strings + _chunk(TAG_ITEM_PLACES, struct.pack('<I', len(places)) + b''.join(places))
+    lair = backrooms_lair(lay) if tp.sir_demon_id else None
+    objects = backrooms_props(tp, lay, w, h, seed, area, stage_index(tp, area), lair)
+    object_chunk = struct.pack('<I', len(objects)) + b''.join(objects)
+    spawns = []
+    if lair is not None:  # Sir, facing the way you come in
+        x, z = world(*lair.centre, w, h)
+        spawns.append(_spawn(0x80000000 | tp.sir_demon_id, (x, tp.floor_y, z), 0.0))
+    people_chunk = struct.pack('<I', 1 + len(spawns)) + tp.people_db + b''.join(spawns)
+    env = bytearray(tp.chunks[TAG_ENV])
+    struct.pack_into('<3f', env, 0x30, *(float(v) * 0.5 for v in struct.unpack_from('<3f', env, 0x30)))
+    lay.info = {'backrooms': 1, 'boss': 0, 'gate': 0, 'props': len(objects), 'sir': tp.sir_demon_id if lair is not None else 0}
+    payloads = {TAG_GRID: grid, TAG_NODES: node_chunk, TAG_OBJECTS: object_chunk, TAG_ITEMS: item_chunk, TAG_PEOPLE: people_chunk, TAG_ENV: bytes(env)}
+    out = struct.pack('<I', MAGIC)
+    for tag in (TAG_GRID, TAG_NODES, TAG_OBJECTS, TAG_ITEMS, TAG_PEOPLE, TAG_ENV):
+        out += _chunk(tag, payloads[tag])
+    lay.terrain = build_terrain(tp, lay, w, h) if tp.terrain_tile else b''
+    return out, lay
+
+
+def grid_size(area: int) -> int:
+    return GRID_BY_DEPTH.get(depth_of(area), GRID_MAX)
+
+
+def build_floor(tp: Template, seed: int, area: int, *, w: int = 0, h: int = 0, present=None, met=None, last_area: int = 0, shrine_done: bool = False) -> tuple[bytes, Layout]:
+    if not w:
+        w = h = grid_size(area)
     rng = Rng(seed, area)
     stage = stage_of(tp, area)
     two_sets = bool(stage) and len(stage[0]) >= 2 and len(stage[1]) >= 2
     start_cell = (int(START_X // CELL) + w // 2, int(START_Z // CELL) + h // 2)
-    lay = generate_layout(rng, w, h, area, start_cell)
+    arch_name = pick_archetype(rng, depth_of(area))
+    mutator = pick_mutator(rng, depth_of(area))
+    stage_no = stage_index(tp, area)
+    blockers = [pr for pr in tp.props if pr[0] in BLOCKERS and themed(tp, pr[0], stage_no)]
+    block_fill = [pr for pr in tp.props if pr[0] in BLOCK_FILL and themed(tp, pr[0], stage_no)]
+    lay = generate_layout(rng, w, h, area, start_cell, arch_name, bool(blockers), False, tp.shapes.get(stage_no) if getattr(tp, 'shapes', None) else None)
+    assign_purposes(rng, lay, depth_of(area))
+    arrange_neighbours(lay)  # purposes to rooms by size and neighbours
+    choose_sources(rng, lay, tp.dress.get(stage_no) if tp.dress else None)
+    arrange_neighbours(lay)  # again, where a stone's rooms moved a purpose
+    pick_copy(rng, lay, tp.dress.get(stage_no) if tp.dress else None, stage_no)
+    pick_showpiece(rng, lay, tp.dress.get(stage_no) if tp.dress else None)
+    lay.archetype, lay.mutator = arch_name, mutator
+    pillars_ok = bool(tp.pillar) and themed(tp, PILLAR_NAME, stage_no)
+    # pillared halls: an uncut ordinary room at least 4 cells a side, half the time
+    for room in lay.rooms:
+        if room.kind == 'room' and not room.cut and room.purpose != 'quiet' and room.c1 - room.c0 >= 3 and room.r1 - room.r0 >= 3 and pillars_ok:
+            room.pillars = rng.chance(50)
     if not two_sets:
         for room in lay.rooms:
             room.style = 0  # the pillared variant needs a second wall and floor set
@@ -1363,88 +2527,377 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
     exit_room = lay.exit_room
     staircase = is_staircase(area)
     pair = (area - 1) % len(tp.key_ids)
-    # lights: rooms (the exit red, a staircase blue-white), every fourth corridor cell, maze nodes
+    # lights: rooms (the exit red, a staircase blue-white, the stone's own colour elsewhere), every
+    # fourth corridor cell (eighth in the dark), maze nodes
+    room_colour = STAGE_LIGHT.get(stage_index(tp, area), (0.55, 0.38, 0.2))
+    hall_colour = tuple(v * 0.65 for v in room_colour)
+    dark = mutator == 'dark'
+    room_strength = 0.45 if dark else 1.0
+    every = 12 if dark else 6
     nodes = []
-    for room in lay.rooms:
+    room_lamp = {}  # ordinary room index -> its lamp's index in nodes (moved toward its furniture after the dressing)
+    for i, room in enumerate(lay.rooms):
         if room.kind == 'maze':
             continue
         x, z = world(*room.centre, w, h)
-        colour = ((0.3, 0.4, 0.6) if staircase else (0.5, 0.05, 0.05)) if room.kind == 'exit' else (0.45, 0.15, 0.5) if room.kind == 'boss' else (0.55, 0.38, 0.2)
+        colour = ((0.3, 0.4, 0.6) if staircase else (0.5, 0.05, 0.05)) if room.kind == 'exit' else (0.45, 0.15, 0.5) if room.kind == 'boss' else QUIET_LIGHT if room.purpose == 'quiet' else room_colour
+        strength = 1.0 if room.kind in ('exit', 'boss') else 1.3 if room.purpose == 'quiet' else room_strength  # the exit and the boss room stay lit in the dark
+        if room.kind == 'room' and room.purpose != 'quiet':
+            strength *= USE_LIGHT.get(room.purpose, 1.0)
+            room_lamp[i] = len(nodes)
         span = max(room.c1 - room.c0, room.r1 - room.r0)
-        nodes.append(_light(tp, (x, LIGHT_Y, z), colour, 1.0, 2.0, float(900 + 250 * span)))
+        nodes.append(_light(tp, (x, LIGHT_Y, z), colour, strength, 2.0, float(600 + 150 * span)))
     for k, (c, r) in enumerate(lay.corridor_cells):
-        if k % 4 == 1:
+        if k % every == 1:
             x, z = world(c, r, w, h)
-            nodes.append(_light(tp, (x, LIGHT_Y, z), (0.35, 0.25, 0.14), 0.7, 2.0, 800.0))
+            nodes.append(_light(tp, (x, LIGHT_Y, z), hall_colour, 0.7, 2.0, 600.0))
     for k, (c, r) in enumerate(lay.bypass_cells):
-        if k % 4 == 1:
+        if k % every == 1:
             x, z = world(c, r, w, h)
-            nodes.append(_light(tp, (x, LIGHT_Y, z), (0.35, 0.25, 0.14), 0.7, 2.0, 800.0))
+            nodes.append(_light(tp, (x, LIGHT_Y, z), hall_colour, 0.7, 2.0, 600.0))
     if exit_room.kind == 'maze':
         k = 0
         for r in range(exit_room.r0, exit_room.r1 + 1, 2):
             for c in range(exit_room.c0, exit_room.c1 + 1, 2):
-                if k % 2 == 0:
+                if k % 3 == 0:
                     x, z = world(c, r, w, h)
                     colour = ((0.3, 0.4, 0.6) if staircase else (0.5, 0.05, 0.05)) if (c, r) == exit_room.goal else (0.3, 0.2, 0.1)
                     nodes.append(_light(tp, (x, LIGHT_Y, z), colour, 0.8, 2.0, 700.0))
                 k += 1
+    if depth_of(area) == BLUE_DEPTH:  # easter egg 5: every lamp cold blue, whatever the stone
+        blue = []
+        for node in nodes:
+            b = bytearray(node)
+            struct.pack_into('<3f', b, 8 + 116, *BLUE_LIGHT)
+            blue.append(bytes(b))
+        nodes = blue
     node_chunk = struct.pack('<I', len(nodes)) + b''.join(nodes)
-    # props; the staircase decoration in the exit on staircase areas
+    # dressing: whole cells of the game's own levels for this stone, turned to fit each cell's walls;
+    # rooms by purpose where a fitting dressing exists, corridors now and then
     objects = []
-    for room in lay.rooms:
-        if room.kind in ('start', 'maze', 'boss', 'closet'):
-            continue
-        cells = room.cells
-        edge_cells = [(c, r) for c, r in cells if c in (room.c0, room.c1) or r in (room.r0, room.r1)]
-        count = rng.between(1, 2 + len(cells) // 2)
-        for _ in range(count):
-            c, r = rng.pick(edge_cells)
-            name, raw = rng.pick(tp.props)
-            fx = 0.2 if c == room.c0 else 0.8 if c == room.c1 else rng.unit() * 0.6 + 0.2
-            fz = 0.2 if r == room.r0 else 0.8 if r == room.r1 else rng.unit() * 0.6 + 0.2
-            x, z = world(c, r, w, h, fx, fz)
-            objects.append(_object(raw, (x, tp.floor_y, z), rng.unit() * 360.0))
-    # wall-mounted props on wall sides of ordinary rooms and corridors, floor debris in rooms
-    if tp.wall_props:
+    dress_items = []  # loose items of the dressed cells, placed with the other items below
+    info_eggs = {}  # the easter eggs this area carries (the mod and, later, the dialogue read them)
+    hall_pillar_cells = {cell for room in lay.rooms if room.pillars for cell in _pillar_cells(room)}
+    dress = tp.dress.get(stage_no) if tp.dress else None
+    if dress:
+        d_classes, d_rooms, d_by_tag, d_tipped = dress
+
+        def class_of(c, r):
+            m = sum(1 << q for q in range(4) if side_kind(lay, c, r, q) == WALL)
+            for ci, cm in enumerate(DRESS_CLASSES):
+                for k in range(4):
+                    if rot_mask(cm, k) == m:
+                        return ci, k
+            return None
+
+        def place(objs, c, r, k, clear=None):
+            """Places a cell's objects turned k steps; returns (object index, model) of upright seats. On a
+            walkway cell (`clear`) an object near the cell's middle is left out."""
+            seats = []
+            cx, cz = world(c, r, w, h)
+            for dx, dy, dz, raw in objs:
+                b = bytearray(raw)
+                mtx = list(struct.unpack_from('<9f', b, 8 + 20))
+                for _ in range(k):
+                    dx, dz, mtx = rot_step(dx, dz, mtx)
+                if clear and (c, r) in clear and abs(dx) < WALK_CLEAR and abs(dz) < WALK_CLEAR:
+                    continue
+                if dy > HUNG_Y:
+                    near = [q for q, d in enumerate((CELL / 2 + dz, CELL / 2 + dx, CELL / 2 - dz, CELL / 2 - dx)) if d < HUNG_NEAR]
+                    kinds = [side_kind(lay, c, r, q) for q in near]
+                    if DOOR in kinds and WALL not in kinds:
+                        continue
+                struct.pack_into('<9f', b, 8 + 20, *mtx)
+                struct.pack_into('<3f', b, 8 + 56, cx + dx, tp.floor_y + dy, cz + dz)
+                name = dress_name(raw)
+                low = name.lower()
+                if ('chair' in low or 'stool' in low) and 'brok' not in low and abs(mtx[4]) >= 0.7:
+                    seats.append((len(objects), name))
+                objects.append(bytes(b))
+            return seats
+
+        room_cells = sum(len(room.cells) for room in lay.rooms if room.kind == 'room') or 1
+        # what a fight leaves: the stone's own debris (not remains, not decals)
+        fight_debris = [(n, raw) for n, raw in tp.debris if n != REMAINS and n in DEBRIS and not n.startswith('decal') and themed(tp, n, stage_no)]
+        # the stone's own floor decals, in dressing order
+        d_decals = [o for _tag, cells_, _rw, _rh in d_rooms for _cl, objs_, _it, _k in cells_ for o in objs_ if dress_name(o[3]).startswith('decal')]
+
+        def put_decal(c, r):
+            o = rng.pick(d_decals)
+            x, z = world(c, r, w, h, rng.unit() * 0.4 + 0.3, rng.unit() * 0.4 + 0.3)
+            mtx = turn_rows(list(struct.unpack_from('<9f', o[3], 8 + 20)), rng.unit() * 360.0)
+            objects.append(_put(o[3], (x, tp.floor_y + o[1], z), mtx))
+
+        # wall-hung pieces by (purpose tag, wall class), from the stone's own rooms
+        d_hung = {}
+        d_hung_any = {}  # by wall class only (corridor doorways)
+        for tag_, cells_, _rw, _rh in d_rooms:
+            for cl, objs_, _it, _k in cells_:
+                if cl != 0:
+                    for o in objs_:
+                        if o[1] > HUNG_Y:
+                            d_hung.setdefault((tag_, cl), []).append(o)
+                            d_hung_any.setdefault(cl, []).append(o)
+        room_chance = max(DRESS_MIN_CHANCE, min(DRESS_ROOM_CHANCE, DRESS_ROOM_CHANCE * DRESS_FULL_CELLS // room_cells))
+        if mutator == 'collapsed':
+            room_chance = min(DRESS_COLLAPSED_CHANCE, room_chance + 25)
         for room in lay.rooms:
-            if room.kind in ('start', 'maze', 'boss', 'closet'):
+            if room.kind != 'room':
                 continue
-            walls = [(c, r, q) for (c, r) in room.cells for q in range(4) if side_kind(lay, c, r, q) == WALL]
-            for _ in range(rng.between(1, 1 + len(walls) // 4)):
-                c, r, q = rng.pick(walls)
-                name, raw = rng.pick(tp.wall_props)
-                dist_, height, rel = WALL_PROPS[name]
-                along = rng.unit() * 0.6 + 0.2
-                fx = (0.5 + (0.5 - dist_) * SIDE[q][0]) if SIDE[q][0] else along
-                fz = (0.5 + (0.5 - dist_) * SIDE[q][1]) if SIDE[q][1] else along
-                x, z = world(c, r, w, h, fx, fz)
-                objects.append(_object(raw, (x, height, z), SIDE_YAW[q] + rel))
-        for k, (c, r) in enumerate(lay.corridor_cells):
-            if k % 5 == 3:
-                walls = [q for q in range(4) if side_kind(lay, c, r, q) == WALL]
-                if walls:
-                    q = rng.pick(walls)
-                    name, raw = rng.pick(tp.wall_props)
-                    dist_, height, rel = WALL_PROPS[name]
-                    along = rng.unit() * 0.6 + 0.2
-                    fx = (0.5 + (0.5 - dist_) * SIDE[q][0]) if SIDE[q][0] else along
-                    fz = (0.5 + (0.5 - dist_) * SIDE[q][1]) if SIDE[q][1] else along
-                    x, z = world(c, r, w, h, fx, fz)
-                    objects.append(_object(raw, (x, height, z), SIDE_YAW[q] + rel))
-    if tp.debris:
-        for room in lay.rooms:
-            if room.kind in ('start', 'maze', 'closet'):
+            src_index = room.src  # chosen with the purpose (choose_sources, arrange_neighbours)
+            src = d_rooms[src_index] if 0 <= src_index < len(d_rooms) else None
+            if room.purpose == 'quiet' and depth_of(area) % CHAIR_DEPTHS == 0:
+                # easter egg 6: the quiet room holds one chair, by its north wall
+                seat = next((o for rm in d_rooms for _cl, objs, _it, _k in rm[1] for o in objs
+                             if ('chair' in dress_name(o[3]).lower()) and abs(struct.unpack_from('<f', o[3], 8 + 20 + 16)[0]) >= 0.7), None)
+                if seat is not None:
+                    cc = (room.c0 + room.c1) // 2
+                    b = bytearray(seat[3])
+                    x, z = world(cc, room.r0, w, h, 0.5, 0.3)
+                    struct.pack_into('<3f', b, 8 + 56, x, tp.floor_y + seat[1], z)
+                    objects.append(bytes(b))
                 continue
-            for _ in range(rng.between(0, 1 + len(room.cells) // 3)):
-                c, r = rng.pick(room.cells)
-                name, raw = rng.pick(tp.debris)
-                x, z = world(c, r, w, h, rng.unit() * 0.8 + 0.1, rng.unit() * 0.8 + 0.1)
-                objects.append(_object(raw, (x, DEBRIS[name], z), rng.unit() * 360.0))
-    pillar_cells = _pillar_cells(lay.boss_room) if tp.pillar else []
-    for c, r in pillar_cells:
+            if (room.copy or room.show) and src is not None:
+                # easter egg 4 and the showpiece: the source room exactly, cell for cell, each in its own
+                # original turn; in the copy's corner a chair facing the wall (the backrooms' door)
+                seat = next((o for rm in d_rooms for _cl, objs, _it, _k in rm[1] for o in objs
+                             if ('chair' in dress_name(o[3]).lower()) and abs(struct.unpack_from('<f', o[3], 8 + 20 + 16)[0]) >= 0.7), None) if room.copy else None
+                if seat is not None:
+                    b = bytearray(seat[3])
+                    mtx = turn_rows(list(struct.unpack_from('<9f', b, 8 + 20)), 45.0)
+                    struct.pack_into('<9f', b, 8 + 20, *mtx)
+                    x, z = world(room.c0, room.r0, w, h, 0.38, 0.38)
+                    struct.pack_into('<3f', b, 8 + 56, x, tp.floor_y + seat[1], z)
+                    objects.append(bytes(b))
+                for (c, r), (_cl, objs, cell_items, ck) in zip(room.cells, src[1]):
+                    place(objs, c, r, ck)
+                    cx, cz = world(c, r, w, h)
+                    for iid, idx, idy, idz, iyaw in cell_items:
+                        for _ in range(ck):
+                            idx, idz = idz, -idx
+                            iyaw -= 90.0
+                        dress_items.append(_placement(tp.key_place, 0x80000000 | iid, (cx + idx, tp.floor_y + idy, cz + idz), iyaw))
+                continue
+            seats = []
+            used = set()  # each source cell once per room, so a big room is not the same corner over and over
+            clear = walkway(lay, room)
+            roll = rng.below(100)
+            event = 'fight' if roll < EVENT_FIGHT else 'looted' if roll < EVENT_LOOTED else 'hurry' if roll < EVENT_HURRY else 'tidy'
+            if any(room.contains(*a) or room.contains(*b) for a, b in lay.blocked_doors):
+                event = 'fight'  # the barricade was held
+            chance = room_chance // 2 if event == 'looted' else room_chance
+            if room.purpose == 'store':
+                for o in lay.rooms:
+                    if o.kind == 'room' and o.purpose == 'kitchen':
+                        gap = max(o.c0 - room.c1 - 1, room.c0 - o.c1 - 1, o.r0 - room.r1 - 1, room.r0 - o.r1 - 1)
+                        if gap <= NEIGHBOUR_GAP:
+                            chance = 100  # the kitchen's stores, stacked high
+            done = set()  # cells dressed by a group
+            dressed = set()  # cells the cell-by-cell dressing filled
+            if event != 'looted' and src is not None and src[2] >= 2 and src[3] >= 2 and len(src[1]) == src[2] * src[3]:
+                inside = set(room.cells)
+                srw = src[2]
+                for c, r in room.cells:
+                    quad = ((c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1))
+                    if len(objects) >= OBJECT_CAP or any(q in done or q not in inside or q in hall_pillar_cells for q in quad):
+                        continue
+                    if not rng.chance(GROUP_CHANCE):
+                        continue
+                    want = [class_of(*q) for q in quad]
+                    if any(x is None for x in want):
+                        continue
+                    blocks = []
+                    for j in range(src[3] - 1):
+                        for i in range(srw - 1):
+                            idx = (j * srw + i, j * srw + i + 1, (j + 1) * srw + i, (j + 1) * srw + i + 1)
+                            if (all((src[1][x][0], src[1][x][3]) == want[n] and (src_index, x) not in used for n, x in enumerate(idx))
+                                    and sum(len(src[1][x][1]) for x in idx) >= 2):
+                                blocks.append(idx)
+                    if not blocks:
+                        continue
+                    idx = rng.pick(blocks)
+                    for n, (qc, qr) in enumerate(quad):
+                        _cl, objs, cell_items, ck = src[1][idx[n]]
+                        used.add((src_index, idx[n]))
+                        done.add((qc, qr))
+                        seats += place(objs, qc, qr, ck, clear)
+                        cx, cz = world(qc, qr, w, h)
+                        for iid, ix, iy, iz, iyaw in cell_items:
+                            if len(dress_items) >= ITEM_CAP:
+                                break
+                            for _ in range(ck):
+                                ix, iz = iz, -ix
+                                iyaw -= 90.0
+                            dress_items.append(_placement(tp.key_place, 0x80000000 | iid, (cx + ix, tp.floor_y + iy, cz + iz), iyaw))
+            for c, r in room.cells:
+                if (c, r) in done:
+                    continue
+                if (c, r) in hall_pillar_cells or not rng.chance(chance) or len(objects) >= OBJECT_CAP:
+                    continue
+                ck = class_of(c, r)
+                if ck is None:
+                    continue
+                ci, k = ck
+                objs = None
+                if src is not None:
+                    cand = [((src_index, j), o, it) for j, (cl, o, it, _k) in enumerate(src[1]) if cl == ci and (src_index, j) not in used]
+                    if not cand:
+                        cand = [((ri, j), o, it) for ri in d_by_tag.get(src[0], []) for j, (cl, o, it, _k) in enumerate(d_rooms[ri][1]) if cl == ci and (ri, j) not in used]
+                    if not cand:  # every fitting cell of its purpose used once: they repeat (2026-10-22, density)
+                        cand = [((ri, j), o, it) for ri in [src_index] + d_by_tag.get(src[0], []) for j, (cl, o, it, _k) in enumerate(d_rooms[ri][1]) if cl == ci]
+                    if not cand:
+                        continue
+                    key, objs, cell_items = rng.pick(cand)
+                    used.add(key)
+                    # the cell's loose items (cups, books...) as they lay, turned with the cell
+                    cx, cz = world(c, r, w, h)
+                    for iid, idx, idy, idz, iyaw in cell_items:
+                        if len(dress_items) >= ITEM_CAP:
+                            break
+                        for _ in range(k):
+                            idx, idz = idz, -idx
+                            iyaw -= 90.0
+                        dress_items.append(_placement(tp.key_place, 0x80000000 | iid, (cx + idx, tp.floor_y + idy, cz + idz), iyaw))
+                if objs is None:
+                    pool = d_classes[ci] if ci < len(d_classes) else []
+                    if not pool:
+                        continue
+                    objs = rng.pick(pool)
+                seats += place(objs, c, r, k, clear)
+                dressed.add((c, r))
+            # wall dressing by purpose on the walled cells left bare
+            if src is not None:
+                for c, r in room.cells:
+                    if (c, r) in done or (c, r) in dressed or (c, r) in hall_pillar_cells or len(objects) >= OBJECT_CAP:
+                        continue
+                    ck = class_of(c, r)
+                    if ck is None or ck[0] == 0:
+                        continue
+                    pool = d_hung.get((src[0], ck[0]))
+                    if not pool or not rng.chance(WALL_DRESS_CHANCE):
+                        continue
+                    place([rng.pick(pool)], c, r, ck[1])
+            # floor decals by use: worn walkways, a fight's marks, a kitchen's spills
+            if d_decals:
+                for c, r in room.cells:
+                    if len(objects) >= OBJECT_CAP:
+                        break
+                    if (c, r) in clear and rng.chance(WALK_DECAL_CHANCE):
+                        put_decal(c, r)
+                for _ in range(DECAL_FIGHT if event == 'fight' else DECAL_KITCHEN if room.purpose == 'kitchen' else 0):
+                    if len(objects) >= OBJECT_CAP:
+                        break
+                    put_decal(*rng.pick(room.cells))
+                # a fight's trail down the corridor from its first doorway
+                if event == 'fight':
+                    door = None
+                    for a, b in lay.doors:
+                        if room.contains(*a) and lay.at(*b) == Layout.CORRIDOR:
+                            door = (a, b)
+                        elif room.contains(*b) and lay.at(*a) == Layout.CORRIDOR:
+                            door = (b, a)
+                        if door is not None:
+                            break
+                    if door is not None:
+                        prev, cell = door
+                        for _ in range(TRAIL_LEN):
+                            if len(objects) >= OBJECT_CAP:
+                                break
+                            if rng.chance(TRAIL_CHANCE):
+                                put_decal(*cell)
+                            nxt = None
+                            for q, (dx, dz) in enumerate(SIDE):
+                                nb = (cell[0] + dx, cell[1] + dz)
+                                if nxt is None and nb != prev and lay.at(*nb) == Layout.CORRIDOR and side_kind(lay, cell[0], cell[1], q) != WALL:
+                                    nxt = nb
+                            if nxt is None:
+                                break
+                            prev, cell = cell, nxt
+            # the story the event tells with the seats
+            jitter = TIDY_JITTER if event == 'tidy' else HURRY_JITTER if event == 'hurry' else SEAT_JITTER
+            to_knock = 0 if event == 'tidy' else len(seats) if event == 'fight' else 1
+            knocked = 0
+            for index, name in seats:
+                b = bytearray(objects[index])
+                tips = d_tipped.get(name)
+                if knocked < to_knock and tips:
+                    tm, tdy = rng.pick(tips)
+                    mtx = turn_rows(list(tm), rng.unit() * 360.0)
+                    x, _y, z = struct.unpack_from('<3f', b, 8 + 56)
+                    struct.pack_into('<3f', b, 8 + 56, x, tp.floor_y + tdy, z)
+                    knocked += 1
+                else:
+                    mtx = turn_rows(list(struct.unpack_from('<9f', b, 8 + 20)), rng.unit() * 2 * jitter - jitter)
+                struct.pack_into('<9f', b, 8 + 20, *mtx)
+                objects[index] = bytes(b)
+            if event == 'fight' and fight_debris:
+                for _ in range(FIGHT_DEBRIS):
+                    if len(objects) >= OBJECT_CAP:
+                        break
+                    fc, fr = rng.pick(room.cells)
+                    name, raw = rng.pick(fight_debris)
+                    x, z = world(fc, fr, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
+                    objects.append(_object(raw, (x, tp.floor_y + DEBRIS[name], z), rng.unit() * 360.0))
+        for c, r in lay.corridor_cells:
+            if rng.chance(DRESS_CORRIDOR_CHANCE) and len(objects) < OBJECT_CAP:
+                ck = class_of(c, r)
+                if ck is not None and ck[0] < len(d_classes) and d_classes[ck[0]]:
+                    place(rng.pick(d_classes[ck[0]]), c, r, ck[1])
+        # corridor clutter: debris where corridors bend or meet, a wall piece by their doorways
+        for c, r in lay.corridor_cells:
+            if len(objects) >= OBJECT_CAP:
+                break
+            sides = [side_kind(lay, c, r, q) for q in range(4)]
+            exits = [q for q in range(4) if sides[q] != WALL]
+            turn = len(exits) >= 3 or (len(exits) == 2 and (exits[1] - exits[0]) % 2 == 1)
+            if turn and fight_debris and rng.chance(CORRIDOR_CLUTTER):
+                for _ in range(1 + rng.below(2)):
+                    name, raw = rng.pick(fight_debris)
+                    x, z = world(c, r, w, h, rng.unit() * 0.5 + 0.25, rng.unit() * 0.5 + 0.25)
+                    objects.append(_object(raw, (x, tp.floor_y + DEBRIS[name], z), rng.unit() * 360.0))
+            if DOOR in sides:
+                ck = class_of(c, r)
+                if ck is not None and ck[0] != 0 and ck[0] in d_hung_any and rng.chance(DOORWAY_DRESS):
+                    place([rng.pick(d_hung_any[ck[0]])], c, r, ck[1])
+    # the barricades: on the room side of each blocked doorway, a barricade across it and something heaped beside
+    for (ac, ar), (bc, br) in lay.blocked_doors:
+        q = SIDE.index((bc - ac, br - ar))
+        x, z = world(ac, ar, w, h, 0.5 + 0.32 * SIDE[q][0], 0.5 + 0.32 * SIDE[q][1])
+        _name, raw = rng.pick(blockers)
+        objects.append(_object(raw, (x, tp.floor_y, z), SIDE_YAW[q]))
+        if block_fill:
+            side = (q + 1) % 4
+            x2, z2 = world(ac, ar, w, h, 0.5 + 0.22 * SIDE[q][0] + 0.25 * SIDE[side][0], 0.5 + 0.22 * SIDE[q][1] + 0.25 * SIDE[side][1])
+            _name, raw = rng.pick(block_fill)
+            objects.append(_object(raw, (x2, tp.floor_y, z2), rng.unit() * 360.0))
+    remains = next((raw for name, raw in tp.debris if name == REMAINS), None) if themed(tp, REMAINS, stage_no) else None
+    if remains is not None and area == last_area:
+        # easter egg 1: where the last descent ended, remains in the room farthest from the start
+        sc0 = lay.rooms[0].centre
+        far = max((room for room in lay.rooms if room.kind == 'room'), key=lambda rm: abs(rm.centre[0] - sc0[0]) + abs(rm.centre[1] - sc0[1]), default=None)
+        if far is not None:
+            x, z = world(*far.centre, w, h, 0.4, 0.6)
+            objects.append(_object(remains, (x, DEBRIS[REMAINS], z), 37.0))
+            info_eggs['memorial'] = 1
+    gaol = next((room for room in lay.rooms if room.kind == 'room' and room.purpose == 'gaol'), None)
+    if remains is not None and gaol is not None and depth_of(area) >= 2 and rng.chance(ELARA_CHANCE):
+        # easter egg 2: the twelfth name, remains by the bars of the first gaol
+        x, z = world(gaol.c0, gaol.r0, w, h, 0.35, 0.35)
+        objects.append(_object(remains, (x, DEBRIS[REMAINS], z), 205.0))
+        info_eggs['elara'] = 1
+    carving = next((raw for name, raw in tp.props if name == CARVING), None) if themed(tp, CARVING, stage_no) else None
+    if carving is not None and lay.treasury is not None and depth_of(area) >= 6 and not shrine_done:
+        # easter egg 3: the shrine's carving, in the treasury, once a run
+        t_ = lay.treasury
+        x, z = world(t_.c0, t_.r0, w, h, 0.9, 0.9)
+        objects.append(_object(carving, (x, tp.floor_y, z), 0.0))
+        info_eggs['shrine'] = 1
+    pillar_cells = _pillar_cells(lay.boss_room) if pillars_ok else []
+    hall_pillars = [cell for room in lay.rooms if room.pillars for cell in _pillar_cells(room)]
+    for c, r in pillar_cells + hall_pillars:
         x, z = world(c, r, w, h)
         objects.append(_object(tp.pillar, (x, tp.floor_y, z), 0.0))
+    blocked_cells = set(hall_pillars)
     goal = exit_room.goal if exit_room.kind == 'maze' else exit_room.centre
     gx, gz = world(*goal, w, h)
     if staircase:
@@ -1457,6 +2910,10 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
         _placement(tp.marker_place, 0x80000000 | tp.arrival_id, (sx, 100.0, sz), 0.0),
         _placement(tp.marker_place, 0x80000000 | tp.zone_id, (gx, 100.0, gz), 0.0),
     ]
+    copy_room = next((room for room in lay.rooms if room.copy), None)
+    if copy_room is not None and tp.wall_zone_id:
+        x, z = world(copy_room.c0, copy_room.r0, w, h, 0.16, 0.16)
+        places.append(_placement(tp.marker_place, 0x80000000 | tp.wall_zone_id, (x, 100.0, z), 0.0))
     objects_extra = []  # fire operatives are item placements too; listed after the markers
     plates = []  # plate decorations under push zones (objects, appended after the props)
     inside, outside = lay.exit_door
@@ -1475,6 +2932,33 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
         lx, lz = world(gec, ger, w, h, 0.5 + 0.42 * SIDE[lq][0], 0.5 + 0.42 * SIDE[lq][1])
         places.append(_placement(tp.lever_place, 0x80000000 | tp.gate_lever_ids[pair], (lx, LEVER_Y, lz), SIDE_YAW[(lq + 2) % 4]))
         info['gate'], info['gate_lever'] = tp.gate_ids[pair], tp.gate_lever_ids[pair]
+    # the wing gate (another of the template's portcullis/lever pairs): in the far cell facing back,
+    # its lever on the near side for the player to find
+    if lay.wing and len(tp.gate_ids) > 1:
+        (wac, war), (wbc, wbr), (wlc, wlr), wlq = lay.wing
+        wk = (pair + 2) % len(tp.gate_ids)
+        wq = SIDE.index((wac - wbc, war - wbr))
+        wx, wz = world(wbc, wbr, w, h)
+        places.append(_placement(tp.gate_place, 0x80000000 | tp.gate_ids[wk], (wx, tp.floor_y, wz), SIDE_YAW[wq], 1))
+        lx, lz = world(wlc, wlr, w, h, 0.5 + 0.42 * SIDE[wlq][0], 0.5 + 0.42 * SIDE[wlq][1])
+        places.append(_placement(tp.lever_place, 0x80000000 | tp.gate_lever_ids[wk], (lx, LEVER_Y, lz), SIDE_YAW[(wlq + 2) % 4]))
+        info['wing_gate'] = tp.gate_ids[wk]
+    # the boss pen: its portcullis in the pen cell facing the boss room (placed down; the mod raises it),
+    # its lever on a wall of the boss cell beside the doorway; the mod needs the pen's box to see the boss in it
+    if lay.pen and len(tp.gate_ids) > 2:
+        (pc, pr), (bc, br), pen_room = lay.pen
+        pk = (pair + 1) % len(tp.gate_ids)
+        pq = SIDE.index((bc - pc, br - pr))
+        walls = [q for q in ((pq + 1) % 4, (pq + 3) % 4, (pq + 2) % 4) if side_kind(lay, bc, br, q) == WALL]
+        if walls:
+            px, pz = world(pc, pr, w, h)
+            places.append(_placement(tp.gate_place, 0x80000000 | tp.gate_ids[pk], (px, tp.floor_y, pz), SIDE_YAW[pq], 1))
+            lq = walls[0]
+            lx, lz = world(bc, br, w, h, 0.5 + 0.42 * SIDE[lq][0], 0.5 + 0.42 * SIDE[lq][1])
+            places.append(_placement(tp.lever_place, 0x80000000 | tp.gate_lever_ids[pk], (lx, LEVER_Y, lz), SIDE_YAW[(lq + 2) % 4]))
+            x0, z0 = world(pen_room.c0, pen_room.r0, w, h, 0.0, 0.0)
+            x1, z1 = world(pen_room.c1, pen_room.r1, w, h, 1.0, 1.0)
+            info['pen_gate'], info['pen_lever'], info['pen_box'] = tp.gate_ids[pk], tp.gate_lever_ids[pk], [x0, z0, x1, z1]
     # talk zones: the companions react at the boss door (its corridor side), past the gate, at the
     # stairs and in the start room of a new depth; all of a spot's zones sit on one cell
     per_spot = len(tp.talk_zone_ids) // len(TALK_SPOTS) if tp.talk_zone_ids else 0
@@ -1541,6 +3025,10 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
             for zid in talk_zone_ids(tp, 'Vault', per_spot, present):
                 places.append(_placement(tp.marker_place, 0x80000000 | zid, (vx2, 100.0, vz2), 0.0))
         others = [room for room in candidates if room is not key_room] or [start]
+        if lay.wing:  # the vault's own key on the near side of the wing gate (the lever may stand in the vault)
+            shut = {frozenset((lay.wing[0], lay.wing[1]))} | {frozenset((s_in, s_out)) for s_in, s_out, _ in lay.secrets}
+            near = _reachable_shut(lay, start.centre, shut)
+            others = [room for room in others if room.centre in near] or [start]
         k2_room = rng.pick(others)
         k2c, k2r = rng.pick(k2_room.cells)
         lay.vault_key_cell = (k2c, k2r)
@@ -1605,21 +3093,70 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
         places.append(_placement(tp.marker_place, 0x80000000 | tp.hazard_ids[q], (x, 100.0, z), 0.0))
     places += objects_extra
     chests = chest_roster(tp, depth_of(area))
-    for room in lay.rooms:
-        if room.kind == 'room' and rng.chance(45):
-            c, r = rng.pick(room.cells)
+    for c, r in lay.spur_ends:  # a reason to walk a dead end, three times in five
+        if rng.chance(60):
             x, z = world(c, r, w, h)
             places.append(_placement(tp.chest_place, 0x80000000 | rng.pick(chests), (x, tp.floor_y, z), rng.unit() * 360.0))
+    rare = rare_chests(tp)
+    rare_chance = min(10 + 5 * depth_of(area), 60)
+    salves = 0
+    for room in lay.rooms:
+        if room.kind != 'room':
+            continue
+        if rng.chance(CHEST_CHANCE.get(room.purpose, 45)):
+            c, r = rng.pick(room.cells)
+            x, z = world(c, r, w, h)
+            chest = rng.pick(rare) if room.purpose == 'shrine' and rng.chance(rare_chance) else rng.pick(chests)
+            places.append(_placement(tp.chest_place, 0x80000000 | chest, (x, tp.floor_y, z), rng.unit() * 360.0))
+        # the first healing salve: in the quiet room (the second is in the hidden treasury)
+        if tp.salve_id and salves < 1 and room.purpose == 'quiet':
+            c, r = rng.pick(room.cells)
+            x, z = world(c, r, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
+            places.append(_placement(tp.key_place, 0x80000000 | tp.salve_id, (x, tp.floor_y, z), rng.unit() * 360.0))
+            salves += 1
+    if lay.treasury is not None:  # the hidden room: a rare find and the second salve, always
+        tcells = lay.treasury.cells
+        x, z = world(*tcells[0], w, h)
+        places.append(_placement(tp.chest_place, 0x80000000 | rng.pick(rare), (x, tp.floor_y, z), rng.unit() * 360.0))
+        if tp.salve_id:
+            x, z = world(*tcells[3], w, h)
+            places.append(_placement(tp.key_place, 0x80000000 | tp.salve_id, (x, tp.floor_y, z), 0.0))
+    places += dress_items
     item_chunk = _patch_script(tp.item_db, area, seed) + tp.item_strings + _chunk(TAG_ITEM_PLACES, struct.pack('<I', len(places)) + b''.join(places))
     objects += plates
+    # light by use: each ordinary room's lamp halfway toward the middle of the things standing in it
+    sums = {}
+    for raw in objects:
+        ox, _oy, oz = struct.unpack_from('<3f', raw, 8 + 56)
+        o = lay.at(math.floor(ox / CELL + w / 2), math.floor(oz / CELL + h / 2))
+        if o in room_lamp:
+            a = sums.setdefault(o, [0.0, 0.0, 0])
+            a[0] += ox
+            a[1] += oz
+            a[2] += 1
+    for o, (sx_, sz_, n) in sorted(sums.items()):
+        b = bytearray(nodes[room_lamp[o]])
+        lx, ly, lz = struct.unpack_from('<3f', b, 8 + 68)
+        struct.pack_into('<3f', b, 8 + 68, (lx + sx_ / n) / 2, ly, (lz + sz_ / n) / 2)
+        nodes[room_lamp[o]] = bytes(b)
+    node_chunk = struct.pack('<I', len(nodes)) + b''.join(nodes)
     object_chunk = struct.pack('<I', len(objects)) + b''.join(objects)
     # people
     enemies = enemy_count(area)
     depth = depth_of(area)
     roster = enemy_roster(tp, depth)
     keep_out = 6 if depth == 1 else 4 if depth == 2 else 2  # cells from the start: no ambush on arrival
+    if mutator == 'silent':
+        enemies = max(4, enemies // 4)  # the halls are empty; the boss room is not
+    elif mutator == 'ambush':
+        enemies = min(enemies * 3 // 2, ENEMY_CAP)
+        keep_out = 1
     spawns = []
-    homes = [room for room in lay.rooms if room.kind not in ('start', 'exit', 'boss', 'closet')]
+    homes = []
+    for room in lay.rooms:
+        if room.kind in ('start', 'exit', 'boss', 'closet', 'treasury', 'pen') or room.purpose == 'quiet':
+            continue
+        homes += [room] * HOME_WEIGHT.get(room.purpose, 1)
     for room in lay.rooms:
         if room.kind == 'closet':  # two or three enemies waiting behind the plate-opened portcullis
             for cell in room.cells[: 2 + (1 if depth >= 4 else 0)]:
@@ -1637,13 +3174,13 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
         info['boss'] = boss_id
         info['bosses'] = [boss_id]
         boss_cells = [cell for cell in boss_room.cells if cell not in pillar_cells]
-        for _ in range(boss_count(area) - 1):  # extra bosses deeper down; the gate waits for the first
+        for _ in range(min(boss_count(area) + (1 if mutator == 'silent' else 0), BOSS_CAP) - 1):  # extra bosses deeper down; the gate waits for the first
             c, r = rng.pick(boss_cells)
             x, z = world(c, r, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
             extra = rng.pick(bosses)
             spawns.append(_spawn(0x80000000 | extra, (x, tp.floor_y, z), rng.unit() * 2 * math.pi))
             info['bosses'].append(extra)
-        for _ in range(boss_minion_count(area)):
+        for _ in range(min(boss_minion_count(area) * (2 if mutator == 'silent' else 1), MINION_CAP)):
             c, r = rng.pick(boss_cells)
             x, z = world(c, r, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
             spawns.append(_spawn(0x80000000 | rng.pick(roster), (x, tp.floor_y, z), rng.unit() * 2 * math.pi))
@@ -1656,7 +3193,7 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
                 continue  # the exit zone must not be walked into by a wandering enemy
         else:
             c, r = rng.pick(room.cells)
-        if abs(c - start.centre[0]) + abs(r - start.centre[1]) < keep_out:
+        if abs(c - start.centre[0]) + abs(r - start.centre[1]) < keep_out or (c, r) in blocked_cells:
             continue
         x, z = world(c, r, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
         spawns.append(_spawn(0x80000000 | rng.pick(roster), (x, tp.floor_y, z), rng.unit() * 2 * math.pi))
@@ -1664,10 +3201,11 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
     # are (Hunter, 2026-10-22): the soldier holds the room nearest the locked door, the Order's
     # apprentice stopped nearest the maze entry (where what holds the dead is strongest), the bandit
     # hides in the room farthest from everything; ties go to the first room in order
-    if tp.companion_ids and (area - 1) % AREAS_PER_DEPTH == 1:
+    cid = companion_for(tp, area, met)
+    if cid:
         rooms_for = [room for room in lay.rooms if room.kind == 'room' and abs(room.centre[0] - start.centre[0]) + abs(room.centre[1] - start.centre[1]) >= 6]
         if rooms_for:
-            which = (depth_of(area) - 1) % len(tp.companion_ids)  # 0 Tobin (depth 1), 1 Aldric, 2 Mira
+            which = tp.companion_ids.index(cid)  # 0 Tobin, 1 Aldric, 2 Mira: the room that fits them
             if which == 1:
                 target = outside
                 room = min(rooms_for, key=lambda rm: abs(rm.centre[0] - target[0]) + abs(rm.centre[1] - target[1]))
@@ -1678,13 +3216,19 @@ def build_floor(tp: Template, seed: int, area: int, *, w: int = 48, h: int = 48,
                 room = max(rooms_for, key=lambda rm: abs(rm.centre[0] - start.centre[0]) + abs(rm.centre[1] - start.centre[1]))
             c, r = rng.pick(room.cells)
             x, z = world(c, r, w, h, rng.unit() * 0.6 + 0.2, rng.unit() * 0.6 + 0.2)
-            cid = tp.companion_ids[(depth_of(area) - 1) % len(tp.companion_ids)]
             spawns.append(_spawn(0x80000000 | cid, (x, tp.floor_y, z), rng.unit() * 2 * math.pi))
             info['companion'] = cid
     people_chunk = struct.pack('<I', 1 + len(spawns)) + tp.people_db + b''.join(spawns)
+    info.update(info_eggs)
+    if copy_room is not None:  # where the backrooms send you back to
+        info['copy_x'], info['copy_z'] = world(*copy_room.centre, w, h)
+    if any(room.copy for room in lay.rooms):
+        info['copy'] = 1
+    info['archetype'] = ARCH_ORDER.index(arch_name)
+    info['mutator'] = MUTATORS.index(mutator) + 1 if mutator in MUTATORS else 0
     lay.info = info
     env = bytearray(tp.chunks[TAG_ENV])
-    scale = max(0.4, 1.0 - 0.15 * (depth - 1))  # ambient light fades with depth (env block +0x30, three floats)
+    scale = max(0.4, 1.0 - 0.15 * (depth - 1)) * (0.5 if mutator == 'dark' else 1.0)  # ambient light fades with depth (env block +0x30, three floats)
     struct.pack_into('<3f', env, 0x30, *(float(v) * scale for v in struct.unpack_from('<3f', env, 0x30)))
     payloads = {TAG_GRID: grid, TAG_NODES: node_chunk, TAG_OBJECTS: object_chunk, TAG_ITEMS: item_chunk, TAG_PEOPLE: people_chunk, TAG_ENV: bytes(env)}
     out = struct.pack('<I', MAGIC)

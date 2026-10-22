@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import argparse
 import struct
+import math
+import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / 'tools' / 'exanimate'))
+# the exanimate format library: EXANIMATE_TOOLS, else the Exanimate workspace this repo was split from
+_TOOLS = os.environ.get('EXANIMATE_TOOLS') or str(Path(__file__).resolve().parents[3] / 'tools' / 'exanimate')
+sys.path.insert(0, _TOOLS)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import make_companions as mc  # noqa: E402
 from exanimate import level, rdb, rpk, actor  # noqa: E402
@@ -79,6 +82,14 @@ def build(game: Path) -> tuple[bytes, str]:
                     tier.append(new_id)
                     taken += 1
         chest_tiers.append(tier)
+    # the healing salve (exanima03's record, with what it references), for quiet rooms and stores
+    salve_id = 0
+    olv = level.parse(rpk.read(game / 'Resource.rpk', 'exanima03.rfc'))
+    odb = level._local_db(olv)
+    if odb is not None:
+        src = next((r for r in odb.records if r.name == 'Healing Salve'), None)
+        if src is not None:
+            salve_id = eg.import_record({r.id: r for r in odb.records}, src.id, db, next_id_box)
     next_id = next_id_box[0]
     # key / locked door pairs and a chest that holds each key (ids cycle per area)
     key_src = next(r for r in db.records if r.name == 'Key A02')
@@ -136,6 +147,9 @@ def build(game: Path) -> tuple[bytes, str]:
             talk_zones.append(eg._marker_record(markers[eg.MARKER_ZONE], nid, f'Endless Talk {spot_index}{role}', eg.TALK_ZONE_BOX.get(spot, (300, 150, 300)), eg.MARKER_ZONE, eg.TALK_ZONE_FIRST + spot_index, 0, 0, script))
             nid += 1
     pair_zones = []  # retired: the hops are opened by the speaker's line, not by a zone (the ini key stays, empty)
+    # the backrooms trigger (Hunter, 2026-10-22): a small zone in the corner of the perfect copy
+    wall_zone = eg._marker_record(markers[eg.MARKER_ZONE], nid, 'Endless Wall', (90, 150, 90), eg.MARKER_ZONE, 40, 0, 0, b'LuaEvent(EndlessWall,1);')
+    nid += 1
     fire_zones = []
     for k in range(FIRES):
         fire_zones.append(eg._marker_record(markers[eg.MARKER_ZONE], nid, f'Endless Fire Z{k + 1}', (250, 150, 250), eg.MARKER_ZONE, 11 + k, 0, 0, b'LuaEvent(EndlessTrap,%d);' % (11 + k)))
@@ -212,7 +226,7 @@ def build(game: Path) -> tuple[bytes, str]:
         ml.size = len(ml.data)
         maze_gates.append(mg); maze_levers.append(ml)
         nid += 2
-    db.records += [arrival, zone] + keys + doors + key_chests + fires + levers + hazards + fire_zones + talk_zones + pair_zones + gates + gate_levers + secret_doors + switches + plate_fires + closet_gates + plate_closets + maze_gates + maze_levers + [bypass_gate, bypass_lever]
+    db.records += [arrival, zone, wall_zone] + keys + doors + key_chests + fires + levers + hazards + fire_zones + talk_zones + pair_zones + gates + gate_levers + secret_doors + switches + plate_fires + closet_gates + plate_closets + maze_gates + maze_levers + [bypass_gate, bypass_lever]
     level._set_local_db(lv, db)
     # objects: one per prop, generator order
     props = {}
@@ -222,6 +236,16 @@ def build(game: Path) -> tuple[bytes, str]:
             props[o.name] = o
         if o.name == 'barrel wdo1 a02':
             ys.append(o.pos[1])
+    for other in ('exanima02', 'exanima03', 'exanima04', 'exanima05', 'exanima06', 'exanima07', 'exanima08'):
+        if all(n in props for n in eg.PROP_NAMES):
+            break
+        try:
+            olv = level.parse(rpk.read(game / 'Resource.rpk', f'{other}.rfc'))
+        except Exception:
+            continue
+        for o in olv.objects:
+            if o.name in eg.PROP_NAMES and o.name not in props:
+                props[o.name] = o
     names = [n for n in eg.PROP_NAMES if n in props]
     lv.objects = [props[n] for n in names]
     # the staircase decoration (an ordinary Objlib member, flags 0, standard child chunk): one entry
@@ -326,7 +350,10 @@ def build(game: Path) -> tuple[bytes, str]:
             rec.size = len(rec.data)
     # companions (made by make_companions.py): friendly humans with their own meet role
     companions = []
-    for f in sorted((Path(__file__).resolve().parents[1] / 'out' / 'companions').glob('*.actor')):
+    # in the order they are found (mc.COMPANIONS: Tobin, Aldric, Mira), which the ini's companions=, the
+    # generators' companion index, main.lua's TOBIN/ALDRIC/MIRA and roles.ini's reveal_powers indices all
+    # read; sorting the file names gave Aldric, Mira, Tobin (fixed 2026-10-22)
+    for f in [(Path(__file__).resolve().parents[1] / 'out' / 'companions' / f'{name}.actor') for name in mc.COMPANIONS]:
         cdb.records.append(rdb.Record(nid, 0, 0, len(f.read_bytes()), f.read_bytes()))
         companions.append(nid)
         nid += 1
@@ -348,11 +375,28 @@ def build(game: Path) -> tuple[bytes, str]:
         (('GEWS_hmUBB01', 'GEWS_UBB02PA'), ('GEFS_UB06B1',)),                # Hellmode's deep brick (level 7)
         (('GEWS_UBB02', 'GEWS_UBB02PA'), ('GEFS_UB06B1', 'GEFS_UB06A1')),    # the deepest brick (level 8)
     ]
+    # the shipped levels each stage's stone comes from: a prop is placed on a stage only where one
+    # of those levels places it (Hunter's theme rule: nothing vanilla does not pair with the stone)
+    stage_sources = [('exanima01', 'exanima02', 'exanima03'), ('exanima04',), ('exanima05_sw',), ('exanima05',),
+                     ('exanima06',), ('exanima07', 'exanima07_sw'), ('exanima08',)]
     lower_members = {n.lower() for n in members}
     stage_lines = []
-    for walls, floors in stages:
+    written_sources = []
+    for (walls, floors), sources in zip(stages, stage_sources):
         if all(f'{n.lower()}.rfc' in lower_members for n in walls + floors):
             stage_lines.append(f'stage{len(stage_lines) + 1}={",".join(walls)}|{",".join(floors)}')
+            written_sources.append(sources)
+    placed_by = {}
+    for k, sources in enumerate(written_sources, 1):
+        for src_name in sources:
+            if f'{src_name}.rfc'.lower() not in lower_members:
+                continue
+            for o in level.parse(rpk.read(game / 'Resource.rpk', f'{src_name}.rfc')).objects:
+                placed_by.setdefault(o.name, set()).add(k)
+    themed = list(eg.PROP_NAMES) + list(eg.WALL_PROPS) + list(eg.DEBRIS) + [eg.PILLAR_NAME]
+    DRESS_OUT['blob'] = build_dress(game, lower_members, written_sources, db)
+    level._set_local_db(lv, db)  # the loose items build_dress imported
+    prop_stage_line = 'prop_stages=' + ';'.join(f'{n}:' + ','.join(str(k) for k in sorted(placed_by.get(n, ()))) for n in themed)
     ini = '\n'.join([
         '[template]',
         *stage_lines,
@@ -367,6 +411,7 @@ def build(game: Path) -> tuple[bytes, str]:
         f'fires={",".join(str(r.id) for r in fires)}',
         f'fire_zones={",".join(str(r.id) for r in fire_zones)}',
         f'talk_zones={",".join(str(r.id) for r in talk_zones)}',
+        f'wall_zone={wall_zone.id}',
         f'pair_zones={",".join(str(r.id) for r in pair_zones)}',
         f'levers={",".join(str(r.id) for r in levers)}',
         f'hazards={",".join(str(r.id) for r in hazards)}',
@@ -386,8 +431,12 @@ def build(game: Path) -> tuple[bytes, str]:
         *[f'enemies_t{i + 1}_b{k}={",".join(map(str, enemy_bands[i][k]))}' for i in range(len(tiers)) for k in range(1, BANDS + 1)],
         f'companions={",".join(map(str, companions))}',
         'companion_roles=' + ','.join(map(str, main_roles)),
+        f'salve={salve_id}',
+        prop_stage_line,
         'spot_order=' + next((l for l in roles_ini.splitlines() if l.startswith('spot_order=')), 'spot_order=').split('=', 1)[1],
         f'proctor_boss={next((r.id for r in cdb.records if actor.parse(r.data).name == "Proctor15"), 0)}',
+        # the Archives' demon, Sir (Hunter, 2026-10-22: one roams the backrooms); its first, full-strength record
+        f'sir_demon={next((r.id for r in cdb.records if actor.parse(r.data).name == "Sir36"), 0)}',
         'reveal_powers=' + ';'.join(f'{companions[int(e.split(":")[0])]}:{e.split(":")[1]}' for e in next((l for l in roles_ini.splitlines() if l.startswith('reveal_powers=')), 'reveal_powers=').split('=', 1)[1].split(';') if e),
         f'enemies={",".join(map(str, enemies))}',
         *[f'enemies_t{i + 1}={",".join(map(str, tiers[i]))}' for i in range(1, len(tiers))],
@@ -401,6 +450,224 @@ def build(game: Path) -> tuple[bytes, str]:
     return level.pack(lv), ini
 
 
+DRESS_OUT = {}
+DRESS_CAP = 80  # cell dressings kept per stage and class (the corridor and fallback pools)
+DRESS_SKIP = ('stair', 'door', 'portcul', 'cavebld', 'lever', 'chest', 'trunk', 'bridge', 'brdg', 'uwportal')
+# loose items a room keeps (cups, books, candles...): item records by name, imported into the template
+# (no books, parchments or scrolls: nothing readable down here, and some teach skills; Hunter's lore rule)
+CLUTTER = ('cup', 'mug', 'bowl', 'plate', 'jug', 'bottle', 'flask', 'candle',
+           'inkpot', 'tray', 'spoon', 'brush', 'calipers', 'chisel', 'vase', 'goblet', 'tankard', 'pitcher')
+CLUTTER_NOT = ('chest', 'shelf', 'case', 'lever', 'door', 'key', 'book', 'scroll', 'parchment')
+# what a room holds decides its tag (eg.DRESS_TAGS order); a specific word counts three times
+TAG_WORDS = [
+    (1, ('barrel', 'crate', 'sack', 'keg', 'boxcan', 'basket'), ()),
+    (2, ('nightstand', 'weaponsrack', 'clothrack'), ('bed',)),
+    (3, ('table', 'chair', 'stool', 'bench', 'bowl', 'jug', 'tray', 'bottle'), ('cookpot', 'oven')),
+    (4, ('bucket', 'washtube', 'washboard', 'bathwood'), ('latrin',)),
+    (5, ('log', 'plank', 'saw', 'cart', 'hammer', 'dyepot', 'potter', 'barrow'), ('workbench',)),
+    (6, ('skelbase', 'urn', 'candle'), ('coffin',)),
+    (7, ('chain_wall', 'shackle', 'stocks', 'feeder', 'trough'), ('cage', 'cell')),
+    (8, ('tabmed', 'traymed', 'armpr'), ('stretcher', 'bathtub')),
+    (9, ('shelf', 'desk', 'scroll', 'draw_brass'), ('table_school',)),
+]
+
+
+def room_tag(names: list) -> int:
+    best, best_score = 0, 0
+    for tag, words, strong in TAG_WORDS:
+        score = 0
+        for name in names:
+            low = name.lower()
+            if any(w in low for w in strong):
+                score += 3
+            elif any(w in low for w in words):
+                score += 1
+        if score > best_score:
+            best, best_score = tag, score
+    return best
+
+
+def _pack_objs(entry) -> bytes:
+    out = struct.pack('<I', len(entry))
+    for dx, dy, dz, raw in entry:
+        out += struct.pack('<3fI', dx, dy, dz, len(raw)) + raw
+    return out
+
+
+SHAPE_CAP = 48  # room outlines kept per stage
+
+
+def build_dress(game: Path, lower_members: set, written_sources: list, db=None) -> bytes:
+    """EDR2, per stage from its own levels: (1) cell pools by wall class (every plain-sided built
+    cell with 1..8 floor-level objects), (2) every enclosed rectangular room 2..7 cells a side with
+    3 objects or more, kept whole: its tag and each cell's class and objects, (3) the seat poses
+    of knocked-over chairs and stools. Offsets from the cell centre, turned to the class's
+    canonical orientation; heights from the level's floor. EDR5 adds (4) the outlines of the stage's
+    rooms that are not full rectangles (L, T, cross...), 3..7 cells a side, as cell lists, for the
+    generator to stamp (Hunter, 2026-10-22: rooms shaped like the game's own)."""
+    out = bytearray(b'EDR5') + struct.pack('<I', len(written_sources))
+    next_box = [max(r.id for r in db.records) + 1] if db is not None else [0]
+    for sources in written_sources:
+        classes = [[] for _ in eg.DRESS_CLASSES]
+        rooms = []
+        tipped = []
+        shapes = set()  # (w, h, cells) normalised to the outline's corner
+        for src_name in sources:
+            if f'{src_name}.rfc'.lower() not in lower_members:
+                continue
+            data = rpk.read(game / 'Resource.rpk', f'{src_name}.rfc')
+            lv = level.parse(data)
+            g = level.grid(lv)
+            top = dict(eg._chunks(data[4:]))
+            raws = eg._chunks(top[eg.TAG_OBJECTS][4:])
+            decals = sorted(o.pos[1] for o in lv.objects if o.name.startswith('decal'))
+            ys = sorted(o.pos[1] for o in lv.objects)
+            floor = decals[len(decals) // 2] if decals else ys[len(ys) // 20]
+            # loose clutter items per cell, their records imported into the template (one id per source record)
+            ldb = level._local_db(lv)
+            lby = {r.id: r for r in ldb.records} if ldb is not None else {}
+            idmap = {}
+            item_cells = {}
+            for pl in lv.items:
+                if db is None or not pl.item & 0x80000000:
+                    continue
+                rec = lby.get(pl.item & 0x7FFFFFFF)
+                if rec is None:
+                    continue
+                low = rec.name.lower()
+                if not any(w in low for w in CLUTTER) or any(w in low for w in CLUTTER_NOT):
+                    continue
+                dy = pl.pos[1] - floor
+                if not 0 <= dy <= 250:
+                    continue
+                c = math.floor(pl.pos[0] / 600 + g.w / 2)
+                r = math.floor(pl.pos[2] / 600 + g.h / 2)
+                new_id = eg.import_record(lby, rec.id, db, next_box, idmap)
+                if new_id:
+                    item_cells.setdefault((c, r), []).append((new_id, pl.pos[0], dy, pl.pos[2], pl.yaw))
+            cells = {}
+            for (tag_, body), o in zip(raws, lv.objects):
+                c = math.floor(o.pos[0] / 600 + g.w / 2)
+                r = math.floor(o.pos[2] / 600 + g.h / 2)
+                cells.setdefault((c, r), []).append((tag_, body, o))
+                low = o.name.lower()
+                if ('chair' in low or 'stool' in low) and 'brok' not in low and abs(o.rot[4]) < 0.7 and 0 <= o.pos[1] - floor <= 120:
+                    tipped.append((o.name, o.rot, o.pos[1] - floor))
+
+            def cell_entry(c, r, strict):
+                """(class, objects) of a cell, or None; strict: the pool rules (1..8, all clean)."""
+                objs = cells.get((c, r), [])
+                if strict and (not objs or len(objs) > 8):
+                    return None
+                if len(objs) > 16:
+                    return None
+                a = g.cell(c, r)[0]
+                if not a & 0x80000:
+                    return None
+                kinds = [(a >> 4 * q) & 0xF for q in range(4)]
+                if any(k not in (0, 7, 0xB) for k in kinds):
+                    return None
+                m = sum(1 << q for q in range(4) if kinds[q] == 7)
+                found = next(((ci, k) for ci, cm in enumerate(eg.DRESS_CLASSES) for k in range(4) if eg.rot_mask(cm, k) == m), None)
+                if found is None:
+                    return None
+                ci, k = found
+                cx, cz = (c - g.w / 2 + 0.5) * 600, (r - g.h / 2 + 0.5) * 600
+                entry = []
+                for tag_, body, o in objs:
+                    bad = any(word in o.name.lower() for word in DRESS_SKIP) or not -30 <= o.pos[1] - floor <= 450
+                    if bad:
+                        if strict:
+                            return None
+                        continue
+                    dx, dz = o.pos[0] - cx, o.pos[2] - cz
+                    raw = bytearray(eg._chunk(tag_, body))
+                    mtx = list(struct.unpack_from('<9f', raw, 8 + 20))
+                    for _ in range((4 - k) % 4):
+                        dx, dz, mtx = eg.rot_step(dx, dz, mtx)
+                    struct.pack_into('<9f', raw, 8 + 20, *mtx)
+                    entry.append((dx, o.pos[1] - floor, dz, bytes(raw)))
+                if strict:
+                    return ci, entry
+                items = []
+                for new_id, ix, idy, iz, iyaw in item_cells.get((c, r), []):
+                    dx, dz = ix - cx, iz - cz
+                    for _ in range((4 - k) % 4):
+                        dx, dz = dz, -dx
+                        iyaw -= 90.0
+                    items.append((new_id, dx, idy, dz, iyaw))
+                return ci, entry, items, k
+
+            for r in range(g.h):
+                for c in range(g.w):
+                    got = cell_entry(c, r, True)
+                    if got and got[1]:
+                        classes[got[0]].append(got[1])
+            # whole rooms: built cells joined by open sides, a full rectangle, walled round
+            seen = set()
+            for r in range(g.h):
+                for c in range(g.w):
+                    if (c, r) in seen or not g.cell(c, r)[0] & 0x80000:
+                        continue
+                    comp, stack = [], [(c, r)]
+                    seen.add((c, r))
+                    while stack:
+                        cc, rr = stack.pop()
+                        comp.append((cc, rr))
+                        a = g.cell(cc, rr)[0]
+                        for q, (dx, dz) in enumerate(eg.SIDE):
+                            if (a >> 4 * q) & 0xF == 0:
+                                nb = (cc + dx, rr + dz)
+                                if nb not in seen and 0 <= nb[0] < g.w and 0 <= nb[1] < g.h and g.cell(*nb)[0] & 0x80000:
+                                    seen.add(nb)
+                                    stack.append(nb)
+                    cs = [x for x, _ in comp]
+                    rs = [y for _, y in comp]
+                    rw, rh = max(cs) - min(cs) + 1, max(rs) - min(rs) + 1
+                    if rw * rh != len(comp) and 3 <= rw <= 7 and 3 <= rh <= 7 and len(comp) >= 5:
+                        shapes.add((rw, rh, tuple(sorted((x - min(cs), y - min(rs)) for x, y in comp))))
+                    if rw * rh != len(comp) or not (2 <= rw <= 7 and 2 <= rh <= 7):
+                        continue
+                    rcells = []
+                    names = []
+                    n_items = 0
+                    for rr in range(min(rs), max(rs) + 1):
+                        for cc in range(min(cs), max(cs) + 1):
+                            got = cell_entry(cc, rr, False)
+                            if got is not None:
+                                rcells.append(got)
+                                names += [eg.dress_name(raw) for _, _, _, raw in got[1]]
+                                n_items += len(got[2])
+                    if len(names) >= 3:
+                        rooms.append((room_tag(names), rcells, rw, rh))
+        out += struct.pack('<I', len(eg.DRESS_CLASSES))
+        for lst in classes:
+            if len(lst) > DRESS_CAP:
+                step = len(lst) / DRESS_CAP
+                lst = [lst[int(i * step)] for i in range(DRESS_CAP)]
+            out += struct.pack('<I', len(lst))
+            for entry in lst:
+                out += _pack_objs(entry)
+        out += struct.pack('<I', len(rooms))
+        for tag_, rcells, rw, rh in rooms:
+            out += struct.pack('<IIII', tag_, rw, rh, len(rcells))
+            for ci, entry, items, k in rcells:
+                out += struct.pack('<II', ci, k) + _pack_objs(entry) + struct.pack('<I', len(items))
+                for new_id, dx, dy, dz, yaw in items:
+                    out += struct.pack('<I4f', new_id, dx, dy, dz, yaw)
+        out += struct.pack('<I', len(tipped))
+        for name, rot, dy in tipped:
+            out += name.encode('latin-1')[:16].ljust(16, b'\0') + struct.pack('<9f', *rot) + struct.pack('<f', dy)
+        shapes = sorted(shapes)[:SHAPE_CAP]
+        out += struct.pack('<I', len(shapes))
+        for sw, sh, cells in shapes:
+            out += struct.pack('<BBB', sw, sh, len(cells)) + bytes(v for cell in cells for v in cell)
+        DRESS_OUT.setdefault('shapes', []).append(len(shapes))
+        DRESS_OUT.setdefault('summary', []).append((len(rooms), [sum(1 for t_, _, _, _ in rooms if t_ == k) for k in range(len(eg.DRESS_TAGS))], len(tipped),
+                                                    sum(len(it) for _, rc, _, _ in rooms for _, _, it, _ in rc)))
+    return bytes(out)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--game', type=Path, default=Path(r'D:\SteamLibrary\steamapps\common\Exanima'))
@@ -410,6 +677,11 @@ def main() -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / 'endless-template.rfc').write_bytes(data)
     (a.out / 'endless-template.ini').write_text(ini, encoding='ascii')
+    if DRESS_OUT.get('blob'):
+        (a.out / 'endless-dress.bin').write_bytes(DRESS_OUT['blob'])
+        print(f'dressings: {len(DRESS_OUT["blob"])} bytes; room outlines per stage: {DRESS_OUT.get("shapes")}')
+        for k, (nrooms, tags, ntip, nitems) in enumerate(DRESS_OUT.get('summary', []), 1):
+            print(f'  stage {k}: {nrooms} rooms ' + ', '.join(f'{eg.DRESS_TAGS[i]} {n}' for i, n in enumerate(tags) if n) + f'; {ntip} knocked-over seats; {nitems} loose items')
     back = level.parse(data)
     print(f'template: {len(data)} bytes, objects {len(back.objects)}, items {len(back.items)}, spawns {len(back.spawns)}, lights {len(level.lights(back))}')
     print(ini)
