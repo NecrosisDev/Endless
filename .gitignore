@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.claude/
+
+# Built from the game's own files on each machine (see generator/); never commit them.
+assets/endless-template.rfc
+assets/endless-template.rft
+assets/endless-template.ini
+assets/charroles.rdb

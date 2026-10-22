@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.rfc binary
+*.rft binary
+*.rdb binary
+*.rfi binary
+*.pwr binary
