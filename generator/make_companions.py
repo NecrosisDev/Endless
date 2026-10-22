@@ -24,10 +24,13 @@ import argparse
 import copy
 import re
 import struct
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'tools' / 'exanimate'))
+# the exanimate format library: EXANIMATE_TOOLS, else the Exanimate workspace this repo was split from
+_TOOLS = os.environ.get('EXANIMATE_TOOLS') or str(Path(__file__).resolve().parents[3] / 'tools' / 'exanimate')
+sys.path.insert(0, _TOOLS)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from exanimate import rpk, rdb, dialogue, level, actor  # noqa: E402
 import convo  # noqa: E402
@@ -174,7 +177,8 @@ def chain_main_nodes(name: str, ids_by_name: dict) -> list[convo.N]:
         if a == name:
             ask, answer = chain['ask']
             act = f'Actor[0].LeaveDialogue;\nActor[0].ActivateTopicN({me}, {other}, Asked {b}, 1);'
-            nodes.append(convo.N(f'About {b}', convo.MENU_ONCE, [convo.R([('P', ask), ('A', answer)], ed.FOLLOWING, act)]))
+            cond = f'result = {dead_gate(list(ids_by_name).index(b))} & ({ed.FOLLOWING[len("result = "):-1]});'
+            nodes.append(convo.N(f'About {b}', convo.MENU_ONCE, [convo.R([('P', ask), ('A', answer)], cond, act)]))
         elif b == name:
             text, replies = chain['after']
             told = ed.CHAIN_TOLD.get((a, b))
@@ -190,6 +194,27 @@ def with_leaf_action(r: convo.R, act: str) -> convo.R:
     if r.kids:
         return convo.R(list(r.lines), r.cond, r.act, [with_leaf_action(k, act) for k in r.kids])
     return convo.R(list(r.lines), r.cond, (r.act + chr(10) if r.act else '') + act, [])
+
+
+def death_node(node: str, text: str, replies: list[str]) -> convo.N:
+    return convo.N(node, convo.ZONE, [convo.R([('A', text)], '', '', [convo.R([('P', r)]) for r in replies])])
+
+
+def mourning_nodes(name: str, ids_by_name: dict) -> list[convo.N]:
+    """'Mourn <dead> 1..3': once each, in order, an hour apart, while following, after that
+    companion's death (its flag)."""
+    out = []
+    for dead, lines in ed.MOURNING.get(name, {}).items():
+        gate = f'(LuaFlag(endless_dead_{list(ids_by_name).index(dead)}) = 1) & ({ed.FOLLOWING[len("result = "):-1]})'
+        for k, text in enumerate(lines, 1):
+            cond = gate if k == 1 else f'{gate} & (TopicUsed(Mourn {dead} {k - 1}) > 0)'
+            out.append(convo.N(f'Mourn {dead} {k}', ed.MOURN, [convo.R([('A', text)], f'result = {cond};')]))
+    return out
+
+
+def dead_gate(partner_index: int) -> str:
+    """The condition term that is false once that companion is dead (the mod sets the flag)."""
+    return f'(LuaFlag(endless_dead_{partner_index}) = 0)'
 
 
 def flag_name(node: str, index: int) -> str:
@@ -243,6 +268,8 @@ def build_roles(by: dict, name: str, ids: dict, ids_by_name: dict | None = None)
     nodes = [convo.N(n.name, n.flags, [fill(r, ids) for r in n.replies], n.links) for n in spec['main']]
     if ids_by_name:
         nodes += [flagged(n, name, ids_by_name) for n in ed.REACTIONS.get(name, [])]
+        nodes += [flagged(death_node(node, text, replies), name, ids_by_name) for node, (text, replies) in ed.DEATHS.get(name, {}).items()]
+        nodes += mourning_nodes(name, ids_by_name)
         nodes = order_nodes(name, nodes, ids_by_name) + chain_main_nodes(name, ids_by_name)
     data = convo.replace_topic(data, 0, convo.topic(convo.PLAYER, name, 'Unknown', nodes, fields))
     out.append(rdb.Record(ids['main'], src.flags, 0, len(data), named(data, f'EN_{name}')))
@@ -270,17 +297,19 @@ def add_banter(records: dict, main_ids: dict) -> int:
     count = 0
     for (owner, partner), exchanges in ed.BANTER.items():
         rec = records[main_ids[owner]]
-        nodes = [convo.N(name, convo.AUTO_HOURLY, [convo.R(lines, ed.BOTH_FOLLOWING)]) for name, lines in exchanges]
+        alive = f'result = (Actor[1].Health > 0) & {dead_gate(list(main_ids).index(partner))};'
+        both = f'result = (Actor[1].Health > 0) & {dead_gate(list(main_ids).index(partner))} & ({ed.BOTH_FOLLOWING[len("result = "):-1]});'
+        nodes = [convo.N(name, convo.AUTO_HOURLY, [convo.R(lines, both)]) for name, lines in exchanges]
         # the hops a lead's line opens (the node runs only when the partner is near)
         for spot, lines in ed.HOPS.get((owner, partner), {}).items():
-            nodes.append(convo.N(spot, ed.DEPTH_FLAGS if spot == 'Depth' else convo.ZONE, [convo.R(lines)]))
+            nodes.append(convo.N(spot, ed.DEPTH_FLAGS if spot == 'Depth' else convo.ZONE, [convo.R(lines, alive)]))
             count += 1
         # the middle of a chain: the owner's answer to the player opened it; its end opens the
         # partner's closing line to the player (the partner holds its main role; 7 = Player)
         chain = ed.CHAINS.get((owner, partner))
         if chain:
             act = f'Actor[1].ActivateTopicN({main_ids[partner]}, 7, {owner} asked, 1);'
-            nodes.append(convo.N(f'Asked {partner}', convo.ZONE, [convo.R(chain['between'], ed.BOTH_FOLLOWING, act)]))
+            nodes.append(convo.N(f'Asked {partner}', convo.ZONE, [convo.R(chain['between'], both, act)]))
             count += 1
         rec.data = convo.append_topic(rec.data, convo.topic(main_ids[partner], owner, partner, nodes, convo.fields_of(rec.data)))
         rec.size = len(rec.data)
@@ -302,7 +331,10 @@ def render_all(records: dict, ids_by_name: dict) -> str:
            'and your wounds; Mira first at the stairs, a new depth and the vault; Tobin first at the key and the closet',
            'plate, and alone for the beast); the first of them in the party speaks to you, and that line opens one',
            'short exchange with the next in the order, listed under the banter headings by the same name. **Saw you /',
-           'Saw Mira / Spark** are the first castings (yours, Mira\'s, Tobin\'s), opened by the mod when it sees one.',
+           'Saw Mira / Spark** are the first castings (yours, Mira\'s, Tobin\'s), opened by the mod when it sees one;',
+           '**Dead <name>** is the first present survivor\'s line on a companion\'s death, then one exchange between the',
+           'two left; **Mourn <name> 1..3** come on their own afterwards, an hour apart, once each. Lines about a',
+           'dead companion are no longer offered and exchanges with one do not play.',
            'Banter nodes open on their own when both follow. **About <B>** is a',
            'talk-list line you say to one companion about another (once each): as that dialogue closes, the two of',
            'them have the **Asked** exchange under the banter heading, and its end opens the other one\'s **<A> asked**',

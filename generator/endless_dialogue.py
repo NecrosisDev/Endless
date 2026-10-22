@@ -725,6 +725,8 @@ SPOT_ORDER = {
     'Key': ['Tobin', 'Aldric', 'Mira'], 'Closet': ['Tobin', 'Mira', 'Aldric'], 'Big Demon': ['Tobin'],
     # first castings (the mod opens the first present observer's node; Lua, not a zone)
     'Saw you': ['Aldric', 'Mira', 'Tobin'], 'Saw Mira': ['Aldric', 'Tobin'], 'Spark': ['Tobin'],
+    # a companion's death (the mod opens the first present survivor's node; Lua)
+    'Dead Tobin': ['Aldric', 'Mira'], 'Dead Aldric': ['Mira', 'Tobin'], 'Dead Mira': ['Aldric', 'Tobin'],
 }
 # the hops: A's node in its banter topic with B ('A' = A, 'P' = B)
 HOPS = {
@@ -735,6 +737,7 @@ HOPS = {
         'Fight 2': [('A', "Thief! Its side!"), ('P', "I'm on it! I'm on it!")],
         'You hurt': [('A', "Thief. The door."), ('P', "Watching it.")],
         'Saw Mira': [('A', "Did you see that? The girl."), ('P', "I felt it. I told you I felt summat off her.")],
+        'Dead Mira': [('A', "Thief. Stay close. There's two of us now."), ('P', "Aye. Two.")],
     },
     ('Aldric', 'Mira'): {
         'Gate': [('A', "The gate's up. Are you hurt?"), ('P', "No. Go through. I'm behind you.")],
@@ -743,6 +746,7 @@ HOPS = {
         'Key': [('A', "The key. Mark where it was, girl, in case there's another."), ('P', "I will.")],
         'Big Demon': [('A', "Girl. Stay back from that one."), ('P', "I'm staying back.")],
         'Saw you': [('A', "You saw that."), ('P', "I saw it.")],
+        'Dead Tobin': [('A', "The thief's gone."), ('P', "I know. I counted him.")],
     },
     ('Mira', 'Aldric'): {
         'Stairs': [('A', "Aldric."), ('P', "I'll go first."), ('A', "Go, then.")],
@@ -756,6 +760,7 @@ HOPS = {
         'Fight 1': [('A', "Tobin. Get back."), ('P', "I'm back. I'm back.")],
         'Fight 3': [('A', "Tobin. Behind me."), ('P', "Behind you. Aye.")],
         'Saw you': [('A', "Tobin. Did you see?"), ('P', "I saw. I don't want to talk about it.")],
+        'Dead Aldric': [('A', "He's gone, Tobin."), ('P', "I know. I saw. Don't talk to me for a bit.")],
     },
     ('Tobin', 'Aldric'): {
         'Key': [('A', "Told you there'd be one."), ('P', "Good. Now the door."), ('A', "Aye. The door.")],
@@ -771,6 +776,55 @@ HOPS = {
         'Fight 2': [('A', "It's on me! It's on me!"), ('P', "Get back! Get back behind him!")],
         'You hurt': [('A', "Watch the door for me."), ('P', "I'm watching it.")],
         'Spark': [('A', "What was that? What did I do?"), ('P', "That was you, Tobin. Breathe. It was you.")],
+    },
+}
+
+# ------------------------------------------------------ deaths (the mod opens these)
+# One line each on the death of each other companion, in their own voice, to you. The talk-list
+# lines about a dead companion stop being offered (LuaFlag endless_dead_<index>), and the hops
+# with a dead partner do not play (the partner's Health).
+DEATHS = {
+    'Aldric': {
+        'Dead Tobin': ("The thief's down. I said I'd not leave anyone again. I didn't leave him. It wasn't enough.", ["It was not your doing.", "We go on, soldier."]),
+        'Dead Mira': ("The girl. Gods below. She was behind me. She was meant to be behind me.", ["She was. It was not your doing.", "We go on, soldier."]),
+    },
+    'Mira': {
+        'Dead Aldric': ("Aldric. He went in front. He always went in front. I'll count him with the others.", ["Count him.", "We go on, apprentice."]),
+        'Dead Tobin': ("Tobin. I told him nobody here would hurt him. I meant it. It wasn't enough.", ["It was not your doing.", "We go on, apprentice."]),
+    },
+    'Tobin': {
+        'Dead Aldric': ("He's dead. The soldier. He said he'd not leave me, and he didn't. He's dead instead.", ["He kept his word.", "We go on, thief."]),
+        'Dead Mira': ("She's dead. She said she'd not hurt me and she never did. I had the feeling before it came and I said nothing.", ["Say it next time.", "We go on, thief."]),
+    },
+}
+
+# Mourning (Hunter): every so often, not only at the death. Three lines per survivor per dead
+# companion, in order, once each, an hour of world time apart, while following.
+MOURN = 0x01070101  # opens on its own, one use, the hourly gap of the idle lines
+MOURNING = {
+    'Aldric': {
+        'Tobin': ["I keep looking for the thief at my back. Habit.",
+                  "He'd have found that key quicker than we did.",
+                  "Twelve names on the list. I never put his on it. I should have."],
+        'Mira': ["The girl counted the stairs. I've started counting them. I don't know why.",
+                 "She'd have felt that one coming.",
+                 "I had her behind me the whole way down. One door. One."],
+    },
+    'Mira': {
+        'Aldric': ["Aldric would have gone through that door first.",
+                   "I count the stairs for him now. He asked me once how many.",
+                   "He looked for his proctor in every face. I look for his now. I don't mean to."],
+        'Tobin': ["Tobin would have gone quiet before that one. I miss the quiet.",
+                  "I told him to find the stone in his gut. I hope he found it, at the end.",
+                  "He never did eat. I should have made him."],
+    },
+    'Tobin': {
+        'Aldric': ["The soldier would've gone in first. I keep waiting for him to.",
+                   "He wore that sash twenty years. Should've taken it off him. Should've kept it.",
+                   "He said up top he'd hang me. I'd have let him, if it got him up top."],
+        'Mira': ["She never ate. I think about that. I don't know why.",
+                 "I get the feeling and I look round for her. Then I remember.",
+                 "She said nobody'd put me down a hole. She kept to it. Weren't her fault."],
     },
 }
 

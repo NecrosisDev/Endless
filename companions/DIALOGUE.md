@@ -12,7 +12,10 @@ first casting has an order of speakers (Aldric first at the boss door, gate, arr
 and your wounds; Mira first at the stairs, a new depth and the vault; Tobin first at the key and the closet
 plate, and alone for the beast); the first of them in the party speaks to you, and that line opens one
 short exchange with the next in the order, listed under the banter headings by the same name. **Saw you /
-Saw Mira / Spark** are the first castings (yours, Mira's, Tobin's), opened by the mod when it sees one.
+Saw Mira / Spark** are the first castings (yours, Mira's, Tobin's), opened by the mod when it sees one;
+**Dead <name>** is the first present survivor's line on a companion's death, then one exchange between the
+two left; **Mourn <name> 1..3** come on their own afterwards, an hour apart, once each. Lines about a
+dead companion are no longer offered and exchanges with one do not play.
 Banter nodes open on their own when both follow. **About <B>** is a
 talk-list line you say to one companion about another (once each): as that dialogue closes, the two of
 them have the **Asked** exchange under the banter heading, and its end opens the other one's **<A> asked**
@@ -255,6 +258,42 @@ _(on approach: `StartDialogue(Greeting);`)_
         - Tobin: I don't know how I did it the first time.
     - **You**: Later. Fight now.
         - Tobin: Fighting. Aye.
+
+### Dead Aldric
+
+- Tobin: He's dead. The soldier. He said he'd not leave me, and he didn't. He's dead instead.
+    - **You**: He kept his word.
+    - **You**: We go on, thief.
+
+### Dead Mira
+
+- Tobin: She's dead. She said she'd not hurt me and she never did. I had the feeling before it came and I said nothing.
+    - **You**: Say it next time.
+    - **You**: We go on, thief.
+
+### Mourn Aldric 1
+
+- Tobin: The soldier would've gone in first. I keep waiting for him to.
+
+### Mourn Aldric 2
+
+- Tobin: He wore that sash twenty years. Should've taken it off him. Should've kept it.
+
+### Mourn Aldric 3
+
+- Tobin: He said up top he'd hang me. I'd have let him, if it got him up top.
+
+### Mourn Mira 1
+
+- Tobin: She never ate. I think about that. I don't know why.
+
+### Mourn Mira 2
+
+- Tobin: I get the feeling and I look round for her. Then I remember.
+
+### Mourn Mira 3
+
+- Tobin: She said nobody'd put me down a hole. She kept to it. Weren't her fault.
 
 ### Aldric asked
 
@@ -674,6 +713,42 @@ _(on approach: `StartDialogue(Greeting);`)_
 
 - Aldric: The girl. The Order sent us a shaper and told us nothing. I should have known. Good. Point it at them, girl, and not at us.
 
+### Dead Tobin
+
+- Aldric: The thief's down. I said I'd not leave anyone again. I didn't leave him. It wasn't enough.
+    - **You**: It was not your doing.
+    - **You**: We go on, soldier.
+
+### Dead Mira
+
+- Aldric: The girl. Gods below. She was behind me. She was meant to be behind me.
+    - **You**: She was. It was not your doing.
+    - **You**: We go on, soldier.
+
+### Mourn Tobin 1
+
+- Aldric: I keep looking for the thief at my back. Habit.
+
+### Mourn Tobin 2
+
+- Aldric: He'd have found that key quicker than we did.
+
+### Mourn Tobin 3
+
+- Aldric: Twelve names on the list. I never put his on it. I should have.
+
+### Mourn Mira 1
+
+- Aldric: The girl counted the stairs. I've started counting them. I don't know why.
+
+### Mourn Mira 2
+
+- Aldric: She'd have felt that one coming.
+
+### Mourn Mira 3
+
+- Aldric: I had her behind me the whole way down. One door. One.
+
 ### About Mira
 
 - **You**: The apprentice. Does she hold up?
@@ -750,6 +825,11 @@ _(on approach: `StartDialogue(Greeting);`)_
 - Aldric: Did you see that? The girl.
 - Tobin: I felt it. I told you I felt summat off her.
 
+### Dead Mira
+
+- Aldric: Thief. Stay close. There's two of us now.
+- Tobin: Aye. Two.
+
 ### Asked Tobin
 
 - Aldric: You were asked about. Whether you can be trusted.
@@ -809,6 +889,11 @@ _(on approach: `StartDialogue(Greeting);`)_
 
 - Aldric: You saw that.
 - Mira: I saw it.
+
+### Dead Tobin
+
+- Aldric: The thief's gone.
+- Mira: I know. I counted him.
 
 ### Asked Mira
 
@@ -1101,6 +1186,42 @@ _(on approach: `StartDialogue(Greeting);`)_
     - **You**: What do you mean, it pushes back?
         - Mira: The more you use it, the more you feel them. The dead. All of them at once. Rest between.
 
+### Dead Aldric
+
+- Mira: Aldric. He went in front. He always went in front. I'll count him with the others.
+    - **You**: Count him.
+    - **You**: We go on, apprentice.
+
+### Dead Tobin
+
+- Mira: Tobin. I told him nobody here would hurt him. I meant it. It wasn't enough.
+    - **You**: It was not your doing.
+    - **You**: We go on, apprentice.
+
+### Mourn Aldric 1
+
+- Mira: Aldric would have gone through that door first.
+
+### Mourn Aldric 2
+
+- Mira: I count the stairs for him now. He asked me once how many.
+
+### Mourn Aldric 3
+
+- Mira: He looked for his proctor in every face. I look for his now. I don't mean to.
+
+### Mourn Tobin 1
+
+- Mira: Tobin would have gone quiet before that one. I miss the quiet.
+
+### Mourn Tobin 2
+
+- Mira: I told him to find the stone in his gut. I hope he found it, at the end.
+
+### Mourn Tobin 3
+
+- Mira: He never did eat. I should have made him.
+
 ### Aldric asked
 
 - Mira: Aldric says you asked after me. I'm all right. If I'm not, I'll say so.
@@ -1250,6 +1371,11 @@ _(on approach: `StartDialogue(Greeting);`)_
 
 - Mira: Tobin. Did you see?
 - Tobin: I saw. I don't want to talk about it.
+
+### Dead Aldric
+
+- Mira: He's gone, Tobin.
+- Tobin: I know. I saw. Don't talk to me for a bit.
 
 ### Asked Tobin
 
