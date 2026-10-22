@@ -83,14 +83,13 @@ All of their dialogue is in `companions/DIALOGUE.md` (it contains story spoilers
 
 ## Template files
 
-The mod needs five files that are built from the game's own data, so the release ZIP does not
-include them:
+The mod needs four files that are built from the game's own data, so the release ZIP does not
+include them (a fifth, the terrain tile, the mod makes itself):
 
 | File | What it is |
 |---|---|
 | `assets/endless-template.rfc` | the template level every area is built from |
 | `assets/endless-template.ini` | the record ids and settings that go with that template |
-| `assets/endless-template.rft` | a flat terrain tile served with each area |
 | `assets/charroles.rdb` | the game's roles database with the companions' roles added |
 | `assets/endless-dress.bin` | room furnishings cut from the game's own levels |
 
@@ -122,8 +121,9 @@ Then copy them into the installed mod:
 The `.rfc`, `.ini` and `.rdb` must come from the same build, because the template's companion
 records refer to the roles in that database. Rebuild all of them after a game update.
 
-`assets\endless-template.rft` is not written by these two scripts. It is a one-tile flat terrain
-file in the game's `.rft` format; the mod will not start a run without it.
+The flat terrain tile served with each area (`endless-template.rft`) is not built by these scripts.
+The mod makes it from your installed game the first time it needs it and keeps it in its `cache`
+folder. It needs a script runtime that can read the game's files (`levels.read`).
 
 ## Install
 
