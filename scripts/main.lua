@@ -685,6 +685,7 @@ local PUZZLE_POLL_SECONDS = 0.5
 local PLATE_REACH_CM = 90       -- a character this close to the plate's middle stands on it
 local TIMED_RETRY_GROWTH = 1.5  -- each missed timed run leaves the gate up this much longer next time
 local LEVER_SETTLE_POLLS = 4    -- after the levers spring back, polls before they are read again
+local LEVER_UNREAD_POLLS = 20   -- polls without the puzzle's levers before the gate is raised anyway
 local function in_box(p, box) return p and box and p[1] >= box[1] and p[1] <= box[3] and p[3] >= box[2] and p[3] <= box[4] end
 local function puzzle_step(info, pz)
     local kind = info.puzzle
@@ -705,7 +706,17 @@ local function puzzle_step(info, pz)
         -- (so a held door needs no companion); an object's weight is the plate's own business (the game's
         -- plate drives the same gate)
         local snap = api.snapshot()
-        if not snap then return end
+        if not snap then
+            -- neither the fallback lever nor the characters can be read: never a locked run
+            if not fpos then
+                pz.unread = (pz.unread or 0) + 1
+                if pz.unread >= LEVER_UNREAD_POLLS and api.drive(info.puzzle_gate, true) then
+                    pz.solved = true
+                    say("the puzzle cannot be read: the gate is raised")
+                end
+            end
+            return
+        end
         local on = false
         for _, row in ipairs(snap.characters) do
             local p = row.position
@@ -725,10 +736,17 @@ local function puzzle_step(info, pz)
         return
     end
     local rows = api.lever_rows(info.puzzle_levers)
-    if not rows then return end
     local pos = {}
     for i = 1, #info.puzzle_levers do
-        if not rows[i] then return end
+        if not (rows and rows[i]) then
+            -- the levers cannot be read (no world.levers, or not found): never a locked run
+            pz.unread = (pz.unread or 0) + 1
+            if pz.unread >= LEVER_UNREAD_POLLS and api.drive(info.puzzle_gate, true) then
+                pz.solved = true
+                say("the puzzle's levers cannot be read: the gate is raised")
+            end
+            return
+        end
         pos[i] = rows[i].lever_position
     end
     if pz.settle and pz.settle > 0 then pz.settle = pz.settle - 1 return end

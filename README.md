@@ -34,6 +34,7 @@ Author: NecrosisDev
   - **Weight plate:** put something heavy on the plate. Barrels and crates lie nearby.
   - **Hold the door:** the plate is right by the door. Someone has to stay on it: a companion, a
     body, or the one barrel or crate left nearby.
+  - Both plate puzzles also have a lever hidden further back that raises the gate for good.
   - **Lever order:** three levers in nearby rooms. Pull them in the right order, or they all spring
     back. Bottles at their feet may give a hint.
   - **Timed gate:** a lever raises the gate for a few seconds. Each miss gives you longer, and a
