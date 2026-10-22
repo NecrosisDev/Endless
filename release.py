@@ -7,7 +7,7 @@ The ZIP holds mods/com.necrosis.endless/ as EMTK loads it from the Exanima folde
 the game's own data (PRIVATE), which are never published. Its entries carry a fixed timestamp, so the same files
 always give the same SHA256. Before building, the previous mod folder is moved to dist/previous/, so the ZIP holds
 only what this build wrote. --zip-only packages the mod folder as it stands. --without-private (CI) copies the
-shipped files that need no game data, so it builds from a clean checkout. --tag stops unless the tag is
+shipped files that need no game data into a scratch folder, so it builds from a clean checkout and never touches dist/mods/. --tag stops unless the tag is
 v<manifest version>.
 """
 import argparse
@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,13 +34,13 @@ def assemble(extra: list[str]) -> None:
     subprocess.run([sys.executable, '-X', 'utf8', '-B', str(ROOT / 'tools/make_dist.py'), *extra], check=True)
 
 
-def assemble_public() -> None:
+def assemble_public(mod: Path) -> None:
     spec = importlib.util.spec_from_file_location('make_dist', ROOT / 'tools/make_dist.py')
     make_dist = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(make_dist)
     for name in make_dist.SHIP:
         if name not in PRIVATE:
-            target = DIST / 'mods' / MOD_ID / name
+            target = mod / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
 
@@ -61,7 +62,8 @@ def set_aside(mod: Path) -> None:
 
 def package(mod: Path, name: str) -> Path:
     files = sorted(p for p in mod.rglob('*') if p.is_file() and p.relative_to(mod).as_posix() not in PRIVATE)
-    archive = mod.parents[1] / f'{name}-{version(mod)}.zip'
+    DIST.mkdir(exist_ok=True)
+    archive = DIST / f'{name}-{version(mod)}.zip'
     with zipfile.ZipFile(archive, 'w') as z:
         for path in files:
             info = zipfile.ZipInfo(f'mods/{mod.name}/{path.relative_to(mod).as_posix()}', date_time=(1980, 1, 1, 0, 0, 0))
@@ -79,19 +81,26 @@ def main() -> int:
     parser.add_argument('--without-private', action='store_true', help='build only the files that need no game data')
     parser.add_argument('--tag', help='release tag; must be v<manifest version>')
     args, extra = parser.parse_known_args()
-    mod = DIST / 'mods' / MOD_ID
     if args.zip_only and extra:
         parser.error('builder options need a build, not --zip-only')
+    if args.without_private:
+        # The public files go to a scratch folder: dist/mods/ is the full, playable build the installer copies.
+        with tempfile.TemporaryDirectory(prefix='endless-public-') as stage:
+            mod = Path(stage) / MOD_ID
+            assemble_public(mod)
+            return release(mod, args.tag)
+    mod = DIST / 'mods' / MOD_ID
     if not args.zip_only:
         set_aside(mod)
-        if args.without_private:
-            assemble_public()
-        else:
-            assemble(extra)
+        assemble(extra)
+    return release(mod, args.tag)
+
+
+def release(mod: Path, tag: str | None) -> int:
     if not (mod / 'manifest.toml').is_file():
         raise SystemExit(f'no built mod in {mod}')
-    if args.tag and args.tag != f'v{version(mod)}':
-        raise SystemExit(f'tag {args.tag} does not match manifest version {version(mod)}')
+    if tag and tag != f'v{version(mod)}':
+        raise SystemExit(f'tag {tag} does not match manifest version {version(mod)}')
     package(mod, NAME)
     return 0
 
