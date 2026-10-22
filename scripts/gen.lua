@@ -70,7 +70,7 @@ function gen.is_staircase(area) return area % AREAS_PER_DEPTH == 0 end
 local PUZZLES = {"key", "lever", "plate", "order", "timed", "hold"}
 local PLATE_DIST, HOLD_DIST, TIMED_DIST = {3, 5}, {1, 2}, {4, 7}
 local TIMED_BASE, TIMED_PER_CELL = 5.0, 1.6
-local HEAVY = {"barrel wdo1 a02", "cratel4", "barrel wdo1 a01", "cratesmall a"}
+local HEAVY = {"barrel wdo1 a02", "cratel4", "barrel wdo1 a01", "cratesmall a", "barrel rusty a1", "crate rusty a1", "box rusty big a", "barrel ubm a01", "crate ubm a01", "crate ubm a02", "barrel mtob a01", "barrel mtob a02", "crate mtob b02"} -- endless_gen: each stage's own upright barrels and crates
 local CLUE = {["bottle_wkr b"] = true, ["pot"] = true}
 function gen.puzzle_kind(area)
     local depth = gen.depth_of(area)
@@ -2124,7 +2124,7 @@ local function puzzle_parts(t, lay, rng, kind, start, ic, ir, oc, orr, w, h, d_r
         local x, z = world(pc[1], pc[2], w, h)
         places[#places + 1] = placement(t.plate_place, 0x80000000 | t.puzzle_plate_id, x, t.floor_y, z, 0.0)
         info.puzzle_plate = {x, z}
-        if kind == "plate" and d_rooms then
+        if d_rooms then -- two weights by the plate; one by the held door
             local heavy = {}
             for _, name in ipairs(HEAVY) do
                 local found
@@ -2143,7 +2143,7 @@ local function puzzle_parts(t, lay, rng, kind, start, ic, ir, oc, orr, w, h, d_r
                 if math.abs(d_of(cell) - dp) <= 1 and not (cell[1] == pc[1] and cell[2] == pc[2]) then around[#around + 1] = cell end
             end
             if #around == 0 then around[1] = pc end
-            for _ = 1, (#heavy > 0 and 2 or 0) do
+            for _ = 1, (#heavy > 0 and (kind == "plate" and 2 or 1) or 0) do
                 local ob = rng:pick(heavy)
                 local hc = rng:pick(around)
                 local fx, fz = rng:unit() * 0.5 + 0.25, rng:unit() * 0.5 + 0.25
