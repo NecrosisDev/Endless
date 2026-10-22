@@ -46,6 +46,245 @@ live inside the level's exit script.
   exit directly.
 - **Secret passages** (from depth 2): an extra corridor whose two doorways carry the shipped
   wall-looking secret door, each opened by a brick switch on that room's wall.
+- **Rooms grow out of each other** (Hunter, 2026-10-22: the areas were mostly hallways). A new room
+  is placed beside one already placed, on a random side, a gap of ground away (`gap` per archetype:
+  1-3 cells, the mine 4-8), overlapping it along that side; rooms are bigger (warren 3-6 cells, halls
+  4-7). Corridors fell from about half of the built cells to a quarter (25,202 room cells to 8,042
+  corridor cells over 120 areas), and the build got cheaper with them.
+- **Bigger areas** (Hunter, 2026-10-22): each archetype tries for twice the rooms (warren 16, crypt
+  22, cistern 12, mine 8, halls 12, plus two per depth, at most 28) with larger sizes (warren 3-7,
+  halls 5-8, their halls up to 9). Over 105 generated areas the built floor is a median 495 cells
+  (182 to 1,120; level 1 of the game is 661), 20 rooms, corridors a fifth of it. A build is 2.5 to
+  4.1 million instructions, 13 to 21 task pulses.
+- **Twice the size, growing with depth** (Hunter, 2026-10-22). The grid is 56 cells a side at depth
+  1, 60 at depth 2 and 64 from depth 3 (64 x 64 is the largest grid the game's own levels use, so
+  it stops there); each plan tries for twice its rooms plus three per depth, up to 60. Over 150
+  areas: depth 1 a median 946 built cells and 37 rooms (was 495 and 20), depth 4 992 and 49,
+  depth 10 1,323 and 51. A build is now 9.6 to 12.4 million instructions, 48 to 62 task pulses,
+  about a second at 60 frames; a deep build peaks near 13.4 MiB of Lua.
+- **Barricaded doors** (Hunter): 1 + depth / 2 doorways a level (at most 4) between an ordinary
+  room with two doorways or more and a corridor are blocked from the room side by a barricade with
+  crates or a barrel heaped beside it, each only when everything the player can reach (secret
+  doors shut) stays reachable without it, so another way in always exists. The solvability check,
+  the wing gate's cut test and its lever, and the vault key all treat them as shut. Barricades are
+  themed like every prop, so they appear only on stones whose levels place them (the catacombs,
+  the lower halls and level 7's brick); about 1.4 a level over 150 areas.
+- **Puzzles dividing the area** (Hunter, 2026-10-22). *Main*: a portcullis on the one doorway or
+  corridor edge every way to the boss door passes (secret doors counted open, so no passage goes
+  round it), chosen walking back from the boss door so the wing holds two ordinary rooms where it
+  can, else one; its lever (the template's spare boss-gate/lever pair) is on the near side as far
+  from the gate as possible, in a dead end where one is reachable. About half the areas have one;
+  in the rest the boss door's key is the only gate. *Hidden*: a 2x2 treasury off an ordinary room
+  behind the wall-looking secret door, opened by the brick switch on that room's wall, holding a
+  chest from the deepest loot tier and the second healing salve (the first is in the quiet room).
+  The vault's own key is always on the near side of the wing gate, which may stand in the vault.
+  410 generated areas solvable (`solvable()` counts the wing gate and the treasury door).
+- **Dressing** (Hunter, 2026-10-22: props clipped the walls and left the middle of rooms empty).
+  `make_template.py` cuts every built cell of each stage's own shipped levels whose sides are plain
+  walls, doorways or open into a cell dressing: its 1..8 objects (no stairs, doors, portcullises,
+  levers, chests or bridges) with offsets from the cell centre and heights from that level's floor,
+  turned into one of five wall patterns (none, one wall, corner, passage, dead end), up to 80 per
+  stage and pattern (`assets/endless-dress.bin`, about 0.9 MB, built from the game's data and not
+  committed). The generator dresses 70 % of ordinary room cells (95 % under a collapse) and 30 % of
+  corridor cells with a dressing of the cell's own wall pattern turned to fit, preferring for a
+  room one that holds its purpose's props. So furniture sits where the game itself put it relative
+  to the walls, the middle of rooms is used, and every piece comes from a level of that stone. The
+  old scattered props, wall props and debris are gone. An area carries about 1,200 to 2,200
+  objects (level 1 of the game: 3,400). The mod parses the dressing file inside the build task
+  (about 0.3 M instructions, once).
+- **Rooms that tell a story** (Hunter, 2026-10-22: "a table should have some chairs at random
+  rotations, maybe one knocked over ... a latrine, a kitchen, a barracks; take vanilla rooms as
+  prefabs"). The dressing file (now `EDR2`, about 2.2 MB) also keeps every enclosed rectangular
+  room of each stage's own levels whole (2..7 cells a side, 3 objects or more; 68 rooms for the
+  catacombs) with a tag read from what is in it: store, barracks (beds), kitchen (tables, seats,
+  cookpots), latrine (latrines, buckets, washtubs), workshop (logs, planks, saws, dye pots),
+  shrine (coffins), gaol (cages, cells), surgery (stretchers, bathtubs), study. Room purposes gained
+  latrine and workshop. An Endless room takes one source room for its purpose (any room of the
+  stage when that stone has none, and then the purpose follows what the room holds; the quiet
+  room keeps its purpose) and fills its cells from that room's cells of the same wall pattern,
+  each source cell once per room (same-tag rooms next; a cell with nothing left stays clear).
+  Upright chairs and stools are then turned up to 30 degrees either way, and in about a third of
+  the rooms one is knocked over in a pose the game's own levels use for that seat (263 such poses
+  in the catacombs). Seats the game itself left knocked over come along with their rooms, so a
+  wrecked mess hall stays wrecked. Corridors keep the per-cell pools.
+- **Rooms and their neighbours** (Hunter, 2026-10-22: big and small rooms, rooms that need certain
+  neighbours, rooms that cannot sit by others). After purposes and source rooms are chosen, a
+  deterministic pass swaps purposes (with their source rooms) between ordinary rooms where that
+  lowers the broken rules around both: a kitchen wants a store or another kitchen (a mess) within
+  4 cells when the area has a store; the gaol and the latrine keep away from the kitchen; the
+  shrine keeps away from kitchens, barracks, latrines, workshops and stores; latrines, gaols and
+  stores are rooms of 16 cells or fewer, kitchens, barracks and shrines of 6 or more. Over 40
+  areas the kitchen and shrine clashes fell from 63 to 7. The quiet room never moves.
+- **Rooms by scale**: a room's source room is picked among those of its purpose within a factor of
+  two of its own size (else the closest), so a small room takes a private kitchen and a big one a
+  mess hall where the stone has both. Purposes are arranged by size and neighbours first, then
+  the source rooms are chosen, then arranged once more where a stone's rooms moved a purpose.
+- **Loose items**: the dressing file (`EDR3`) carries each source cell's loose clutter items (cups,
+  bowls, jugs, bottles, candles, an inkpot...) with their record imported into the template, placed
+  as they lay and capped at 200 an area. Books, parchments and scrolls are excluded (nothing
+  readable down here, and some teach skills). The game's own rooms hold almost none of these as
+  items: the bottles, trays and baskets on its tables are scenery objects, already copied with the
+  room, so the shipped stones yield four placements in all (an inkpot among them).
+- **Frame budget**: the room dressing chance falls from 70 % as an area passes 900 room cells (not
+  below 35 %), and no cell is dressed once the area holds 3,000 objects (the game's level 1 has
+  about 3,400): over 60 areas a median of 2,355 objects, at most 3,048.
+- **Easter eggs** (Hunter, 2026-10-22; their lines wait for his approval in
+  `companions/DRAFT-easter-eggs.md`, the places are built and silent):
+  1. *Your last descent*: in the area where the previous run ended (the run summary's area), remains
+     lie in the room farthest from the start. Remains are the game's skeleton prop, which only the
+     catacombs and lower halls place, so on other stones this one does not appear.
+  2. *The twelfth name*: from depth 2, 15 % of areas with a gaol hold remains by the bars of the
+     first one (same stones).
+  3. *Bram's shrine*: the carving from level 7 (`carving stla a1`, pulled into the template from that
+     level) stands in the treasury once a run, from depth 6, on level 7's stone; remembered in storage
+     `endless.shrine` across CONTINUE.
+  4. *A perfect copy*: 4 % of catacomb areas turn one ordinary room of a source room's exact size into
+     that room exactly, every cell in its original turn (the dressing file, now `EDR4`, keeps each
+     room's size and each cell's turn).
+     *The backrooms* (Hunter, 2026-10-22): a chair in the copy's corner faces the wall; the template's
+     `Endless Wall` zone (ini `wall_zone`) sits in the corner behind it. Walking in builds
+     `gen.build_backrooms` for this area (a 64-cell plain plan of the same stone, one dull yellow light,
+     no one), served as `floor_name(area + 7)`. Its furniture is sparse and wrong (`backrooms_props`, its own rng): two rows of chairs facing a north or south wall, beds stood on end, one prop square at a room's exact middle, the same chair and bucket in the same spot room after room, and a table set for one in the biggest room; only `chair a`, `table_m_re a`, `bed b01`, `coffin01`, `bucket wod a01`, `stool a` as the stone's own dressing has them, never in a doorway cell or the key's cell. Sir, the Archives' demon (ini `sir_demon`, record `Sir36`, full strength), waits in the ordinary room nearest half the farthest room's distance from the start (`backrooms_lair`, never the key's room); that room stays bare. Its locked way out has its key in the room
+     farthest from the door; the exit raises `EndlessBack` and the mod travels back to the area and
+     places you in the copy room (`info.copy_x/z`). Untested live: whether the area keeps its state
+     (killed boss, opened gate, loot taken) when you come back.
+  5. *Depth 13*: every lamp cold blue, whatever the stone.
+  6. *The quiet chair*: at depth 50 and every 50 after, the quiet room holds one chair by its north
+     wall and nothing else of the dressing.
+  The mod publishes `LuaFlag(endless_egg_memorial / _elara / _shrine / _copy)` for the lines to come.
+- **Plan shape** (2026-10-22, tuned with `tests/measure_vanilla.py` against the 14 shipped levels): the
+  first third of the rooms is a spine, each beside the last and mostly heading one way; the rest are wings,
+  half beside the newest room (a district grows) and half off a spine room. Extra corridors join each room
+  to one of its three nearest rooms it is not yet joined to (`LOOP_BASE`, `LOOP_PER`). Doorways per room
+  3.33 (vanilla 3.30), dead-end rooms 18 % (17 %), loops 22 (27.5); rooms stay about twice vanilla's size.
+  The exit is the farthest room that a boss room fits beside (`EXIT_TRIES`): before, about 1 area in 15
+  had no boss.
+  Room outlines: the dressing file (now `EDR5`) also keeps every vanilla room on the stage's levels that is
+  not a full rectangle (3..7 cells a side; 12 to 43 per stage); 30 % of ordinary rooms take one of their
+  stone's outlines, doubled when it is 4 cells a side or less, as the cut of their rectangle.
+  Corridors wander: a turn costs 2 and each cell 0..2 more from a hash of its place and the area
+  (`TURN_COST`, `_wander`); a quarter of corridors 8 cells or longer get a second lane along their middle
+  third (`WIDE_MIN`, `WIDE_CHANCE`). Corridor share of the floor 17 % (vanilla 15 %).
+  Walkways: in an ordinary room the cells on the shortest ways from its first doorway to each other
+  doorway (to its middle when it has one) keep only dressing that sits toward the cell's edge
+  (`walkway`, `WALK_CLEAR` 0.3 of a cell); about 7 % of the dressing is left out for them.
+  Furniture groups: before the cell-by-cell dressing, half of the free 2x2 patches of an ordinary room take a
+  whole 2x2 block of the room's source room whose cells have the same walls in the same turns
+  (`GROUP_CHANCE`), so a table, its chairs and what is on it land together.
+  One event per room (`EVENT_FIGHT` 15, `EVENT_LOOTED` 30, `EVENT_HURRY` 50 out of 100, else tidy): a fight
+  knocks every seat that can fall and scatters 3 of the stone's own debris (never remains: those stay the
+  easter eggs'); looted halves the dressing and takes no groups; a hurry shoves seats up to 60 degrees and
+  knocks one; tidy leaves them within 8 degrees. This replaces the old one-in-three knocked seat.
+  Light by use: an ordinary room's lamp hangs halfway between its middle and the middle of the objects
+  standing in it, and its strength follows the room's use (`USE_LIGHT`: work rooms brighter, stores,
+  latrines and cells dimmer); the number of lamps is unchanged.
+  Close quarters (Hunter, 10:07): after the exit and the boss room, small rooms of 2 to 3 cells a side
+  are tucked one cell from any room where ground is left (`FILL_SHARE` 35 % more rooms, 75 at most).
+- **Density and orientation, second pass** (2026-10-22): every ordinary-room cell is dressed (`DRESS_ROOM_CHANCE`
+  100, corridors 90 %), a purpose's source cells repeat once all are used, `OBJECT_CAP` 5200 (vanilla level
+  5's objects per cell; areas carry 3,700-4,700). Ordinary rooms 4.5 objects per cell, corridors 3.5 (the
+  census below counts special rooms and wide corridors too). `tests/check_orientation.py` compares with
+  vanilla levels 1-3: no wall piece turned unlike vanilla's own for that model, nothing tipped that vanilla
+  never tips, wall pieces off any wall 34 % (vanilla 33 %), seats facing their table 41 % (56 %). A wall
+  piece pressed against a doorway side with no wall beside it is left out (`HUNG_NEAR`); `SEAT_JITTER` 15.
+- **Decoration density** (2026-10-22, `tests/measure_dressing.py`, vanilla levels 1-3 against depth 1):
+  room objects per cell 3.3 (vanilla 5.1, was 2.4), corridor 2.1 (4.1, was 0.8), wall-hung pieces per room
+  wall side 1.07 (1.15, was 0.73), floor decals per cell 0.18 (0.18, was 0.05). Dressing chances 90/60 %,
+  `OBJECT_CAP` 4200 (areas reach it rarely). Wall dressing by purpose (`WALL_DRESS_CHANCE`): bare walled
+  cells take a wall-hung piece from the stone's rooms of the same purpose and wall class (the wall-prop
+  table `WALL_PROPS` stays loaded by the template but nothing places it). Floor decals by use
+  (`WALK_DECAL_CHANCE`, `DECAL_FIGHT`, `DECAL_KITCHEN`) from the stone's own decal models. Corridor clutter
+  (`CORRIDOR_CLUTTER`, `DOORWAY_DRESS`): the stone's debris at bends and junctions, a wall piece by doorways.
+  Stories across rooms: a room behind a barricade is a fight; a fight leaves a trail of floor marks down
+  the corridor from its first doorway (`TRAIL_LEN`, `TRAIL_CHANCE`); a store beside a kitchen is dressed in
+  every cell. One showpiece per area (`pick_showpiece`, `SHOW_TAGS`): a room whose size matches a whole
+  vanilla room of its purpose on this stone (shrine, surgery, workshop, kitchen first, then barracks,
+  store, gaol, latrine) is dressed as that room exactly, as the perfect copy is but without its chair.
+- **Corridor sectors** (2026-10-22, from a static decompile of the game's culling at 141840, 143C20,
+  5B170, 58CD0): the game makes one sector of every run of cells joined by open sides (a doorway side
+  ends it), draws the camera's sector whole, the sectors one doorway away only through their openings,
+  and nothing further. Endless corridors were one open network, one sector the size of the area, so from
+  any corridor the game drew all of it and nearly every room. `_segment_corridors` cuts corridors into
+  pieces of at most `SEG_MAX` 8 cells joined by doorway sides (corridor pieces per area 75, vanilla 67,
+  before 54); `side_kind` gives those corridor-to-corridor doorways. Not measured live.
+- **Builds on a worker thread** (runtime r41 `tasks.worker`): every area and backrooms build runs in
+  `scripts/build_worker.lua` (a [script.modules] entry) on a runtime worker thread, in a Lua state of its
+  own, so none of it runs in the game's frames; it is sent the four template files and the build inputs
+  and returns the level, its info and the terrain together. The runtime cancels a job on the way to the
+  menu without calling back, so the mod's menu handler clears its build flag itself. Runtimes without
+  workers build with `tasks.run` as before (the 50k background budget, the checkpoints).
+- **Boss pen** (Hunter, 2026-10-22): 40 % of boss rooms get a 2x2 pen off one side (about 30 % of areas
+  once space allows), its portcullis (gate pair `pair + 1`) placed down and raised by the mod on arrival,
+  its lever on a wall of the boss cell beside the doorway. When the lever's position (`world.levers`)
+  moves by half its travel while the living boss stands in the pen's box, the boss counts as beaten: the
+  mod drops the pen gate, sets `endless_boss_caged` and opens the exit gate. The game has no pits or
+  trapdoors (KNOWLEDGEBASE), so the pen is a cage, not a drop. Not seen live: whether bosses follow
+  into a 2x2 pen, and the lever's travel values.
+- **Build cost** (2026-10-22): an area build is about 20 M Lua instructions (was 33 M after the overhaul),
+  so about 100 frames of the runtime's fixed 200k-instruction task budget, typically 2 to 3 ms of a frame
+  offline. Lua-side only, output unchanged: doorway lookups through a set (`Layout:is_door`), the wing-gate
+  search stops at its target, `side_kind` and the hot searches read the grid directly, and the router's
+  wander costs come from a grid made once. The runtime's profiler logs the live cost as `task`. Since
+  runtime r40 the build ahead runs at `tasks.run(fn, {budget = 50000})` (`BACKGROUND_BUDGET`: about 400
+  frames, a quarter of the default's share of each); builds the player waits on (the exit with no build
+  ahead, the backrooms, the terrain) keep the default 200k. Older runtimes ignore the option.
+- **Built ahead** (2026-10-22): five seconds after arriving, the next area builds in the background from
+  the party as it is then; at the exit it is served at once when the party present, the companions met,
+  the last descent and the shrine are unchanged (`build_inputs`), else built again. One build at a time:
+  the exit and the backrooms corner wait for a running build. A menu cannot stop a running task, so its
+  result is dropped (`state.run`): the build stops at its next checkpoint (`gen.cancelled`, a pcall'd
+  error, no effect on output) and a CONTINUE or new run starts after it, even once the game has gone on
+  to the character screen (fixed 2026-10-22: such a run used to be dropped, and the game started the
+  story's first level instead). The exit script's area only
+  restores a run the mod knows nothing of. The backrooms task now loads the dressings (its furniture
+  was missing in the game).
+- **Light School casts** (Hunter, 2026-10-22: companions use Guiding Light and Glare): Mira and Tobin,
+  each only after their talent is granted; Aldric never. When anyone in the party was just hit (each caster
+  at most every 12 s) the mod sends Glare, in a boss fight (every 60 s) Guiding Light: one caster per power
+  per poll, Mira first, as `addons.send("com.necrosis.light-orb", "light.cast", {caster = {handle}, power})`
+  (runtime 0.28.0-r37, Light School 0.17.0; the record id when a row has no handle).
+- **Companion record order** (fixed 2026-10-22): the template now numbers the companion records in the
+  order they are found (Tobin 2731, Aldric 2732, Mira 2733), which everything reads; it used to number
+  them alphabetically, so depth 1 found Aldric and Mira's reveal granted her powers to Tobin's record.
+- **Title row**: plain ENDLESS like the game's own rows; the deepest depth and last descent go on a
+  smaller second line where the runtime offers row subtitles, and on screen when a descent starts.
+- **Area archetypes** (Hunter's review, 2026-10-22): from depth 2 every area is one of five plans
+  that change the layout rules: a warren (the original: 2..5-cell rooms, a few halls, loops), a
+  crypt (many small rooms, one loop, two dead ends), a cistern (one 8..9-cell hall first, loops),
+  a mine (few small rooms, no loops, long corridors, four dead ends) or halls (big rooms, most of
+  them halls). The mod publishes it as `LuaFlag(endless_archetype)` (0 warren, 1 crypt, 2 cistern,
+  3 mine, 4 halls). **Room shapes**: a room at least 4 cells a side is, a third of the time, an L
+  (one corner quadrant unbuilt, never its centre) or an octagon (the four corner cells unbuilt);
+  uncut 4+ rooms get the four pillars half the time where the stone allows a pillar. **Dead ends**:
+  2..4-cell corridors into unbuilt ground clear of every room, a chest at the end three times in
+  five. **Mutators** (from depth 3, three areas in ten; `LuaFlag(endless_mutator)` 1 dark, 2 ambush,
+  3 silent, 4 collapsed): dark halves the ambient light, dims the room lamps to 0.45 and lights
+  every eighth corridor cell (the exit and the boss room stay lit); ambush adds half again to the
+  enemies and lets them stand near the start; silent cuts the halls to a quarter of their enemies
+  and gives the boss room one more boss and twice the minions; collapsed triples the debris.
+  **Light**: the room lamps take the stone's colour by stage (warm in the catacombs, whiter in the
+  lower halls, cold green-blue in the sewers, amber in brick, red-orange in the mines, grey-violet
+  in the old brick, red deeper), corridors the same at 0.65, the quiet room warm and bright.
+- **Theme rule** (Hunter): a prop is placed on a stage only where a vanilla level wearing that
+  stage's stone places it (`prop_stages=` in the ini, from the stage's source levels: 1 levels
+  1-3, 2 level 4, 3 the sewers, 4 level 5, 5 level 6, 6 level 7, 7 level 8). So the catacombs get
+  everything, the lower halls barrels, crates, chairs and tables, the sewers nothing, the mines sacks
+  and hooks; the pillar stands only in the catacombs. "Mixed stone in one area" was dropped for
+  the same reason: no vanilla level wears another depth's stone.
+- **Room purposes** (Hunter's review, 2026-10-22): every ordinary room is a store (crates, barrels
+  and sacks, a chest nine times in ten, sometimes a healing salve), a barracks (stools, chairs,
+  buckets; three times the enemies), a shrine (coffins; from depth 3; its chest is a rare find from
+  the deepest chest tier with a chance of 10 % + 5 % per depth, up to 60 %), the quiet room (one
+  per area from depth 2: nothing spawns there, a chest and a healing salve always), or plain.
+  The salve is exanima03's `Healing Salve` record imported into the template (`salve=`); two per
+  area at most. Enemy counts are capped at 40 (reached at depth 11), bosses at 3, minions at 6.
+- **Run summary**: when a run ends (the menu comes back with an area in progress) the mod stores
+  depth, areas, bosses and companions lost, and the title row reads
+  `ENDLESS  (DEPTH 7)  LAST RUN: DEPTH 4, 11 AREAS, 3 BOSSES`.
+- **Companions are found once**: the mod remembers every companion seen this run (`endless.met`)
+  and passes it to the generator, which skips a met one for the first not yet met and places
+  nobody once all three are met (before this, a companion already following could be found again
+  one depth later). Companions found: Tobin on depth 1, Aldric on 2, Mira on 3.
 - **Monster closets** (from depth 2): a 2x2 room off a corridor, shut by a portcullis that a floor
   plate in the corridor opens (the button class, pressed by contact); two or three enemies inside.
 - **Maze gate puzzles** (from depth 3): portcullises across the maze's entry-to-goal path, each
@@ -169,6 +408,13 @@ conversation builder `convo.py`; the built lines are rendered to `companions/DIA
   reaction node (`Saw you`, `Saw Mira`, Tobin's `Spark`) opens on its own on that flag, once, and
   hops to the next in the order. Mira's `Saw you` differs before and after she has told you.
 - **Aldric is strong**: Close Combat, Armour and Shields at 25000 (five techniques) in his record.
+- **Deaths.** The mod sees a dead companion in the snapshot and sets `endless_dead_<index>` (the
+  talk-list lines about that one stop being offered, and exchanges with it no longer play: their
+  conditions also check the partner's Health), then gives the first present survivor in the
+  occasion's order the reaction flag (`endless_dead_<name>_<observer>`): that survivor's
+  `Dead <name>` line to you opens on its own, once, and hops to the other survivor (`DEATHS`,
+  `HOPS`). Nobody left means nobody says it. Afterwards each survivor mourns every so often:
+  three lines per dead companion (`MOURNING`), in order, once each, an hour of world time apart.
 - **Banter:** a topic in each main role keyed by each other companion's main role: three hourly
   exchanges per direction while both follow (six for Mira with Tobin), plus the hops above.
   The engine only ever pairs two actors; the group orders above are how "all of you" works.
@@ -242,3 +488,39 @@ The runtime must accept member names with extensions in `levels.serve` (`arenao1
   loot lists from other tilesets may look out of place until seen.
 - Plate semantics (press opens the target, release closes it with flag 2) and the secret-door
   look are static readings; the first live run decides whether closets and plates feel right.
+
+## Building and checking
+
+The runtime sandbox has `base` (without `load`, `dofile` or metatables), `table`, `string`, `math`
+and `utf8` only: `gen.lua` builds its objects as plain tables carrying their methods, and both
+tests load the modules through the same restricted environment so a stray global fails offline.
+
+**The build is a task.** The runtime allows about 100k instructions per callback and an area build
+takes 2 to 3.6 million (measured with a count hook: 2.0 M at area 1, 3.6 M at depth 4), so
+`main.lua` runs `gen.build` through `tasks.run` (runtime 0.28.0 r25: 200k instructions a pulse,
+resumed every presented frame, 10 to 18 pulses an area) and serves the level in the completion
+callback; the title row click says "descending", and `next_area` and CONTINUE's restore go the
+same way. A task cannot yield inside a C callback, so the generator uses its own insertion sort
+instead of `table.sort` with a comparator. The stub test models the budget: it counts the pulses a
+build would take and fails if a 200k boundary falls inside a C function. The corridor router no
+longer copies its path per step and searches only a box 8 cells round the two ends (it was 87 %
+of the cost); the remaining cost is the search itself.
+
+**Memory.** The addon's Lua state is 8 MiB by default and an area build holds the template (1.8 MB),
+the level (1.5 MB) and the terrain (1.4 MB) with their intermediates, so the manifest asks for
+`memory_mb = 48` (runtime r26; the parsed dressings are dropped after each build) and the build keeps its peak down: the level and the terrain are
+assembled by one `table.concat` over parts each (no chained `..` copies of megabyte strings), the
+terrain is built in a second task after the level bytes are served and dropped, and the stub fails
+a task whose live memory passes 32 MiB (it reports the peak it saw).
+
+**Frame rate** (Hunter: 7 then 22 FPS against the arena's 60): rock cells only beside built
+cells and vanilla's border ring (above), and lamps cut: room lamps reach 600 + 150 per cell of
+span (was 900 + 250), corridor lamps every sixth cell at 600 (was every fourth at 800), maze lamps
+every third node. The counts are now far under a vanilla floor's (about 25 lamps against level
+1's 122, 130 objects against 3,400).
+
+The generators and checks need the exanimate format library
+(`EXANIMATE_TOOLS`, see `tests/README.md`). `out/` and the four game-data-derived files under
+`assets/` are not committed; each machine builds them from its own installed game.
+`tools/make_dist.py` copies the ready-to-ship mod to `dist/mods/com.necrosis.endless/` (not
+committed); the installer and the packager copy Endless only from there.
