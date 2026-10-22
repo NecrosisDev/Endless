@@ -14,3 +14,9 @@ out/
 
 # the ready-to-ship mod folder (tools/make_dist.py); the installer and packager copy from here
 /dist/
+
+# Kept on disk, not published: development notes, tests and tools that do not build the mod
+/NOTES.md
+/tests/
+/companions/DRAFT-easter-eggs.md
+/companions/DRAFT-story-and-replacements.md
