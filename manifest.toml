@@ -1,17 +1,24 @@
 [plugin]
 name = "Endless"
 version = "0.1.0"
+category = "Content"
 
 # Runtime 0.26.0 names (title.rows, levels.serve, levels.flow, player.place, assets.read, [script.overrides]).
 [script]
 runtime = "com.necrosis.script-runtime"
 entry = "scripts/main.lua"
+# runtime 0.28.0 r26: the addon's Lua state (8 MiB without this); an area build holds the template, the level and the terrain at once
+memory_mb = 48
 requires = ["events.lifecycle", "timers", "events.script", "events.zone", "storage.settings", "title.rows", "levels.serve", "levels.flow", "player.place", "assets.read", "world.read", "script.flags"]
 # characters.powers (0.28.0): the companions' hidden thaumaturgy is granted at runtime
-optional = ["characters.read", "characters.powers", "player.damage", "player.push", "levels.drive", "world.levers"]
+# tasks.run (0.28.0 r25) needs no capability (only timers): the area build runs as a task, 200k instructions a pulse
+# ui.notify: the records shown on screen when a descent starts (the title row stays plain ENDLESS)
+optional = ["characters.read", "characters.powers", "player.damage", "player.push", "levels.drive", "world.levers", "ui.notify"]
 
 [script.modules]
 "gen" = "scripts/gen.lua"
+# runtime r41 tasks.worker: area and backrooms builds on a worker thread (older runtimes build with tasks.run)
+"build_worker" = "scripts/build_worker.lua"
 
 # runtime 0.26.0-dev: our roles database (companion roles) replaces the game's at startup
 [script.overrides]
